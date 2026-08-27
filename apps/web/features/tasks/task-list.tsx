@@ -1,0 +1,114 @@
+"use client";
+
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { AlertCircle, ArrowDownUp, Link2, MessageCircle, RefreshCw } from "lucide-react";
+import { memo, useEffect, useMemo, useRef } from "react";
+import { Avatar } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { PriorityBadge, TaskStatusBadge } from "@/components/patterns/task-badges";
+import type { Member, Task, TaskFilters } from "@/lib/api";
+import { workspaceApi } from "@/lib/api";
+import { cn, relativeTime } from "@/lib/utils";
+
+interface TaskListProps {
+  projectId: string;
+  filters: TaskFilters;
+  members: Member[];
+  selectedTaskId?: string;
+  onOpenTask: (taskId: string) => void;
+}
+
+const TaskRow = memo(function TaskRow({ task, members, selected, onOpen }: { task: Task; members: Member[]; selected: boolean; onOpen: () => void }) {
+  const assignees = task.assigneeIds.map((id) => members.find((member) => member.id === id)).filter(Boolean) as Member[];
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "task-grid h-[58px] w-full items-center border-b border-[var(--border-subtle)] px-4 text-left outline-none transition-colors hover:bg-[var(--hover)] focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)]",
+        selected && "bg-indigo-50/70",
+      )}
+    >
+      <TaskStatusBadge status={task.status} />
+      <div className="min-w-0 py-2">
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{task.key}</span>
+          <span className="truncate text-sm font-medium text-[var(--text)]">{task.title}</span>
+        </div>
+        <div className="mt-1 flex gap-1.5 md:hidden"><PriorityBadge priority={task.priority} /><span className="text-xs text-[var(--text-muted)]">{relativeTime(task.updatedAt)}</span></div>
+      </div>
+      <div className="hidden md:block"><PriorityBadge priority={task.priority} /></div>
+      <div className="hidden -space-x-1.5 lg:flex">
+        {assignees.length ? assignees.slice(0, 3).map((member) => <Avatar key={member.id} name={member.displayName} color={member.color} className="size-6" />) : <span className="text-xs text-[var(--text-muted)]">Unassigned</span>}
+      </div>
+      <div className="hidden items-center gap-3 text-xs text-[var(--text-muted)] xl:flex">
+        {(task.dependencyIds.length > 0 || task.blockingCount > 0) && <span className="inline-flex items-center gap-1"><Link2 className="size-3.5" />{task.dependencyIds.length + task.blockingCount}</span>}
+        <span className="inline-flex items-center gap-1"><MessageCircle className="size-3.5" />{task.commentCount}</span>
+      </div>
+      <span className="hidden text-right text-xs text-[var(--text-muted)] lg:block">{relativeTime(task.updatedAt)}</span>
+    </button>
+  );
+});
+
+export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTask }: TaskListProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const query = useInfiniteQuery({
+    queryKey: ["tasks", projectId, filters.search ?? "", filters.status ?? "all", filters.priority ?? "all"],
+    initialPageParam: "",
+    queryFn: ({ pageParam }) => workspaceApi.listTasks(projectId, { ...filters, cursor: pageParam || undefined, limit: 100 }),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+  });
+  const tasks = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data]);
+  const totalCount = query.data?.pages[0]?.totalCount ?? 0;
+  const hasActiveFilters = Boolean(
+    filters.search?.trim()
+      || (filters.status && filters.status !== "all")
+      || (filters.priority && filters.priority !== "all"),
+  );
+  // TanStack Virtual intentionally returns imperative functions tied to scroll state.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({ count: query.hasNextPage ? tasks.length + 1 : tasks.length, getScrollElement: () => parentRef.current, estimateSize: () => 58, overscan: 8 });
+  const virtualItems = virtualizer.getVirtualItems();
+  const lastIndex = virtualItems.at(-1)?.index;
+
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = query;
+  useEffect(() => {
+    if (lastIndex !== undefined && lastIndex >= tasks.length - 8 && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+  }, [lastIndex, tasks.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
+
+  if (query.isLoading) {
+    return <div className="space-y-px p-3">{Array.from({ length: 10 }).map((_, index) => <div key={index} className="h-[57px] animate-pulse rounded-md bg-slate-100" />)}</div>;
+  }
+
+  if (query.isError) {
+    return <div className="grid h-full place-items-center p-8 text-center"><div><AlertCircle className="mx-auto mb-3 size-6 text-rose-500" /><h2 className="font-semibold">Tasks could not be loaded</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">Check the data source and try again.</p><Button variant="secondary" className="mt-4" onClick={() => query.refetch()}><RefreshCw className="size-4" />Retry</Button></div></div>;
+  }
+
+  if (!tasks.length) {
+    return <div className="grid h-full place-items-center p-8 text-center"><div><h2 className="font-semibold">{hasActiveFilters ? "No tasks match these filters" : "No tasks yet"}</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">{hasActiveFilters ? "Try a broader search or clear a filter." : "Create the first task to start planning this project."}</p></div></div>;
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="task-grid hidden h-9 shrink-0 items-center border-y border-[var(--border)] bg-[var(--surface-muted)] px-4 text-[10px] font-semibold tracking-[.06em] text-[var(--text-muted)] uppercase md:grid">
+        <span>Status</span><span>Task</span><span>Priority</span><span className="hidden lg:block">Assignee</span><span className="hidden xl:block">Signals</span><span className="hidden text-right lg:block">Updated</span>
+      </div>
+      <div ref={parentRef} className="min-h-0 flex-1 overflow-auto contain-strict" aria-label={`${totalCount.toLocaleString()} tasks`}>
+        <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+          {virtualItems.map((virtualRow) => {
+            const task = tasks[virtualRow.index];
+            if (!task) {
+              return <div key="loader" className="absolute left-0 grid h-[58px] w-full place-items-center text-xs text-[var(--text-muted)]" style={{ transform: `translateY(${virtualRow.start}px)` }}><RefreshCw className="mr-2 inline size-3 animate-spin" />Loading more tasks…</div>;
+            }
+            return <div className="absolute top-0 left-0 w-full" key={task.id} style={{ transform: `translateY(${virtualRow.start}px)` }}><TaskRow task={task} members={members} selected={task.id === selectedTaskId} onOpen={() => onOpenTask(task.id)} /></div>;
+          })}
+        </div>
+      </div>
+      <div className="flex h-9 shrink-0 items-center justify-between border-t border-[var(--border)] px-4 text-[11px] text-[var(--text-muted)]">
+        <span>{tasks.length.toLocaleString()} loaded{totalCount > tasks.length ? ` of ${totalCount.toLocaleString()}` : hasNextPage ? " · more available" : ""}</span>
+        <span className="inline-flex items-center gap-1"><ArrowDownUp className="size-3" />Updated recently</span>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,565 @@
+openapi: 3.1.0
+info:
+  title: Happy Task Management API
+  version: 0.1.0
+  description: Project-scoped REST commands and durable SSE synchronization.
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Health
+  - name: Projects
+  - name: Tasks
+  - name: Dependencies
+  - name: Comments
+  - name: Synchronization
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: live
+      responses:
+        "200":
+          description: Process is alive.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: ready
+      responses:
+        "200":
+          description: Process and database are ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Health"}
+        "503": {$ref: "#/components/responses/Error"}
+  /v1/projects:
+    get:
+      tags: [Projects]
+      operationId: listProjects
+      parameters:
+        - {$ref: "#/components/parameters/ActorId"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Projects visible to the development identity.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ProjectPage"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      tags: [Projects]
+      operationId: createProject
+      parameters:
+        - {$ref: "#/components/parameters/ActorId"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateProject"}
+      responses:
+        "201":
+          description: Project created. X-Stream-Cursor identifies its committed event.
+          headers:
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Project"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Projects]
+      operationId: getProject
+      responses:
+        "200":
+          description: A project.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Project"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/TaskStatus"}
+        - name: priority
+          in: query
+          schema: {$ref: "#/components/schemas/TaskPriority"}
+        - name: q
+          in: query
+          description: Case-insensitive title, description, or tag search.
+          schema: {type: string, maxLength: 200}
+      responses:
+        "200":
+          description: Tasks sorted by updatedAt and id descending.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TaskPage"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      tags: [Tasks]
+      operationId: createTask
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateTask"}
+      responses:
+        "201":
+          description: Task created.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Task"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/bootstrap:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Projects]
+      operationId: bootstrapProject
+      description: Reads project, members, first task page, and stream cursor from one repeatable-read snapshot.
+      parameters:
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Gap-free initial project snapshot.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Bootstrap"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      responses:
+        "200":
+          description: A task.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Task"}
+        default: {$ref: "#/components/responses/Error"}
+    patch:
+      tags: [Tasks]
+      operationId: updateTask
+      parameters:
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UpdateTask"}
+      responses:
+        "200":
+          description: Task updated.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Task"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [Tasks]
+      operationId: deleteTask
+      parameters:
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Task tombstone.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TaskTombstone"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/dependencies:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    post:
+      tags: [Dependencies]
+      operationId: addDependency
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateDependency"}
+      responses:
+        "201":
+          description: Dependency added.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Dependency"}
+        "422": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/dependencies/{dependencyTaskId}:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/DependencyTaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    delete:
+      tags: [Dependencies]
+      operationId: removeDependency
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Dependency tombstone.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Dependency"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/comments:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Comments]
+      operationId: listComments
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Newest comments first; reverse each page for conversation display.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CommentPage"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      tags: [Comments]
+      operationId: createComment
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateComment"}
+      responses:
+        "201":
+          description: Comment created.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Comment"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/events:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Synchronization]
+      operationId: streamProjectEvents
+      description: Replays events strictly after the cursor, then live-tails durable project events. Heartbeats are SSE comments.
+      parameters:
+        - name: after
+          in: query
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+        - name: Last-Event-ID
+          in: header
+          schema: {type: string}
+      responses:
+        "200":
+          description: Server-Sent Events. Each data field contains a SyncEvent JSON object.
+          content:
+            text/event-stream:
+              schema: {type: string}
+        default: {$ref: "#/components/responses/Error"}
+components:
+  parameters:
+    ActorId:
+      name: X-Actor-ID
+      in: header
+      required: false
+      description: Development identity. Defaults to the seeded demo actor locally.
+      schema: {type: string, format: uuid}
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 200}
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Current integer entity version, optionally quoted as an ETag.
+      schema: {type: string, example: '"3"'}
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    DependencyTaskId:
+      name: dependencyTaskId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+  headers:
+    ETag:
+      schema: {type: string}
+      description: Quoted entity version.
+    StreamCursor:
+      schema: {type: integer, format: int64}
+      description: Project sequence committed by this mutation.
+  responses:
+    Error:
+      description: Stable API error.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorResponse"}
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string}
+    TaskStatus:
+      type: string
+      enum: [TODO, IN_PROGRESS, BLOCKED, DONE]
+    TaskPriority:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, URGENT]
+    Project:
+      type: object
+      required: [id, name, description, metadata, taskCount, version, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string}
+        metadata: {type: object, additionalProperties: true}
+        taskCount: {type: integer, format: int64, minimum: 0}
+        version: {type: integer, format: int64, minimum: 1}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreateProject:
+      type: object
+      required: [name]
+      properties:
+        id: {type: string, format: uuid, description: Client-generated UUIDv7; generated server-side if omitted.}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, default: ""}
+        metadata: {type: object, additionalProperties: true, default: {}}
+    ProjectPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Project"}
+        nextCursor: {type: string}
+    Bootstrap:
+      type: object
+      required: [project, members, tasks, streamCursor]
+      properties:
+        project: {$ref: "#/components/schemas/Project"}
+        members:
+          type: array
+          items: {$ref: "#/components/schemas/User"}
+        tasks: {$ref: "#/components/schemas/TaskPage"}
+        streamCursor: {type: integer, format: int64, minimum: 0}
+    Task:
+      type: object
+      required: [id, projectId, title, description, status, priority, customFields, assigneeIds, tags, dependencyIds, commentCount, version, createdBy, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        title: {type: string}
+        description: {type: string}
+        status: {$ref: "#/components/schemas/TaskStatus"}
+        priority: {$ref: "#/components/schemas/TaskPriority"}
+        customFields: {type: object, additionalProperties: true}
+        assigneeIds:
+          type: array
+          items: {type: string, format: uuid}
+        tags:
+          type: array
+          items: {type: string}
+        dependencyIds:
+          type: array
+          items: {type: string, format: uuid}
+        commentCount: {type: integer, format: int64, minimum: 0}
+        version: {type: integer, format: int64, minimum: 1}
+        createdBy: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreateTask:
+      type: object
+      required: [title]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 300}
+        description: {type: string, default: ""}
+        status: {$ref: "#/components/schemas/TaskStatus"}
+        priority: {$ref: "#/components/schemas/TaskPriority"}
+        customFields: {type: object, additionalProperties: true, default: {}}
+        assigneeIds:
+          type: array
+          items: {type: string, format: uuid}
+        tags:
+          type: array
+          maxItems: 25
+          items: {type: string, minLength: 1, maxLength: 64}
+    UpdateTask:
+      type: object
+      minProperties: 1
+      properties:
+        title: {type: string, minLength: 1, maxLength: 300}
+        description: {type: string}
+        status: {$ref: "#/components/schemas/TaskStatus"}
+        priority: {$ref: "#/components/schemas/TaskPriority"}
+        customFields: {type: object, additionalProperties: true}
+        assigneeIds:
+          type: array
+          items: {type: string, format: uuid}
+        tags:
+          type: array
+          maxItems: 25
+          items: {type: string, minLength: 1, maxLength: 64}
+    TaskPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Task"}
+        nextCursor: {type: string}
+    TaskTombstone:
+      type: object
+      required: [id, deleted, version]
+      properties:
+        id: {type: string, format: uuid}
+        deleted: {type: boolean, const: true}
+        version: {type: integer, format: int64}
+    CreateDependency:
+      type: object
+      required: [dependsOnTaskId]
+      properties:
+        dependsOnTaskId: {type: string, format: uuid}
+    Dependency:
+      type: object
+      required: [taskId, dependsOnTaskId]
+      properties:
+        taskId: {type: string, format: uuid}
+        dependsOnTaskId: {type: string, format: uuid}
+        deleted: {type: boolean}
+    User:
+      type: object
+      required: [id, displayName, email, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        displayName: {type: string}
+        email: {type: string, format: email}
+        createdAt: {type: string, format: date-time}
+    Comment:
+      type: object
+      required: [id, projectId, taskId, author, body, version, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        author: {$ref: "#/components/schemas/User"}
+        body: {type: string}
+        version: {type: integer, format: int64}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        deletedAt: {type: string, format: date-time}
+    CreateComment:
+      type: object
+      required: [body]
+      properties:
+        id: {type: string, format: uuid}
+        body: {type: string, minLength: 1, maxLength: 10000}
+    CommentPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Comment"}
+        nextCursor: {type: string}
+    SyncEvent:
+      type: object
+      required: [projectId, sequence, type, aggregateType, aggregateId, requestId, payload, occurredAt]
+      properties:
+        projectId: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        type: {type: string, example: task.updated}
+        aggregateType: {type: string}
+        aggregateId: {type: string, format: uuid}
+        aggregateVersion: {type: integer, format: int64}
+        actorId: {type: string, format: uuid}
+        requestId: {type: string, format: uuid}
+        payload: {}
+        occurredAt: {type: string, format: date-time}
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            requestId: {type: string, format: uuid}
+            details: {type: object, additionalProperties: true}

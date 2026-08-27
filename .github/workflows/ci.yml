@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  database:
+    name: Database migrations and seeds
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.11-bookworm
+        env:
+          POSTGRES_DB: taskapp
+          POSTGRES_USER: taskapp
+          POSTGRES_PASSWORD: taskapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskapp -d taskapp"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://taskapp:taskapp@localhost:5432/taskapp?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.7"
+          cache: false
+      - name: Install pinned migration runner
+        run: go install github.com/pressly/goose/v3/cmd/goose@v3.27.3
+      - name: Apply migrations from an empty database
+        run: goose -dir db/migrations postgres "$DATABASE_URL" up
+      - name: Load deterministic demo data
+        run: psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --file db/seed/demo.sql
+      - name: Verify tables, constraints, indexes, and comment query plan
+        run: psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --file db/checks/verify.sql
+      - name: Run transactional database integration test
+        run: go test ./internal/platform/database -run TestTransactionalFlows -count=1
+        env:
+          TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+      - name: Load scale dataset
+        run: >-
+          psql "$DATABASE_URL" --set ON_ERROR_STOP=1
+          --set task_count=10000 --set comment_count=1000
+          --file db/seed/scale.sql
+      - name: Verify deterministic scale counts
+        run: |
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from tasks where project_id = '02000000-0000-7000-8000-000000000001'")" = "10000"
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from comments where project_id = '02000000-0000-7000-8000-000000000001'")" = "1000"
+      - name: Roll back and reapply the latest migration
+        run: |
+          goose -dir db/migrations postgres "$DATABASE_URL" down
+          goose -dir db/migrations postgres "$DATABASE_URL" up
+
+  backend:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build -o /tmp/happy-task-api ./cmd/api
+
+  frontend:
+    name: Next.js checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck --if-present
+      - run: npm run test --if-present
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
+          NEXT_PUBLIC_DATA_SOURCE: api
+
+  containers:
+    name: Container builds
+    runs-on: ubuntu-latest
+    needs: [database, backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose model
+        run: docker compose config --quiet
+      - name: Build deployable images
+        run: docker compose build migrate api web
