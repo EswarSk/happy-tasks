@@ -1,6 +1,6 @@
 # Database Design - Tasks, Comments, Reactions, and Synchronization
 
-**Status:** Proposed for the take-home implementation
+**Status:** Implemented baseline for the take-home; migration and production hardening notes are called out below.
 
 **Primary store:** PostgreSQL
 
@@ -8,8 +8,8 @@
 
 ## 1. Decision summary
 
-Use normalized PostgreSQL tables for authoritative project, task, dependency,
-comment, and reaction state. Use compact rows and keyset pagination rather than
+Use normalized PostgreSQL tables for authoritative identity, membership, task,
+dependency, comment, and reaction state. Use compact rows and keyset pagination rather than
 loading a project aggregate. Every successful mutation writes a durable
 `sync_events` row in the same transaction as the domain change.
 
@@ -148,9 +148,47 @@ CREATE TABLE project_members (
 );
 ```
 
-The take-home uses seeded users and a development identity selector. The
-membership table still makes assignment validation and future authorization
-boundaries explicit.
+The take-home uses seeded users and a development identity selector. Production
+identity is resolved from a verified provider/subject in `user_identities`; the
+API never treats an arbitrary actor header as proof of identity. The default
+local API uses `DEFAULT_ACTOR_ID`; `ALLOW_DEMO_ACTOR_OVERRIDE=true` is an
+explicit test-only escape hatch.
+
+Migration 00011 adds the lifecycle boundary:
+
+```sql
+ALTER TABLE users
+  ADD COLUMN status user_lifecycle_status NOT NULL DEFAULT 'ACTIVE',
+  ADD COLUMN suspended_at timestamptz,
+  ADD COLUMN deleted_at timestamptz;
+
+CREATE TABLE user_identities (
+  provider text NOT NULL,
+  subject text NOT NULL,
+  user_id uuid NOT NULL REFERENCES users(id),
+  email citext,
+  email_verified_at timestamptz,
+  PRIMARY KEY (provider, subject),
+  UNIQUE (user_id, provider)
+);
+
+ALTER TABLE project_members
+  ADD COLUMN id uuid NOT NULL UNIQUE,
+  ADD COLUMN status project_membership_status NOT NULL DEFAULT 'ACTIVE',
+  ADD COLUMN version bigint NOT NULL DEFAULT 1,
+  ADD COLUMN invited_by uuid REFERENCES users(id),
+  ADD COLUMN joined_at timestamptz,
+  ADD COLUMN removed_at timestamptz,
+  ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN updated_at timestamptz NOT NULL DEFAULT now();
+```
+
+`ACTIVE` authorization requires both an active user and an active membership.
+Membership removal is a soft transition: the row remains so comments and
+historical assignment records retain their foreign-key identity. Membership
+updates use `If-Match` against `version`, and owner changes are serialized with
+a project-scoped lock; the final active owner cannot be removed, suspended, or
+demoted.
 
 ### 5.2 Tasks and relationships
 
@@ -175,6 +213,8 @@ CREATE TABLE task_assignees (
     project_id uuid NOT NULL,
     task_id    uuid NOT NULL,
     user_id    uuid NOT NULL,
+    assigned_at timestamptz NOT NULL DEFAULT now(),
+    assigned_by uuid NOT NULL REFERENCES users(id),
     PRIMARY KEY (task_id, user_id),
     FOREIGN KEY (project_id, task_id)
         REFERENCES tasks(project_id, id) ON DELETE CASCADE,
@@ -205,6 +245,15 @@ CREATE TABLE task_dependencies (
         REFERENCES tasks(project_id, id) ON DELETE CASCADE
 );
 ```
+
+`task_assignees` is only current state. Every diff is appended to
+`task_assignment_operations` in the same transaction as the task version
+change. The operation row records the project, task, user, stable membership,
+actor, request ID, operation (`ASSIGNED`/`UNASSIGNED`), and server timestamp.
+Its retry-safe uniqueness key prevents a retried command from duplicating
+history. Removing a membership deletes current assignments and appends
+`UNASSIGNED` operations atomically; affected task versions are incremented so
+stale clients cannot overwrite the cleanup.
 
 The repeated `project_id` is deliberate. It allows the database to reject
 cross-project relationships rather than trusting every application call site.

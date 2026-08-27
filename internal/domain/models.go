@@ -23,11 +23,74 @@ const (
 	PriorityUrgent Priority = "URGENT"
 )
 
+type UserStatus string
+
+const (
+	UserActive    UserStatus = "ACTIVE"
+	UserSuspended UserStatus = "SUSPENDED"
+	UserDeleted   UserStatus = "DELETED"
+)
+
+type MembershipStatus string
+
+const (
+	MembershipActive    MembershipStatus = "ACTIVE"
+	MembershipInvited   MembershipStatus = "INVITED"
+	MembershipSuspended MembershipStatus = "SUSPENDED"
+	MembershipRemoved   MembershipStatus = "REMOVED"
+)
+
+type ProjectRole string
+
+const (
+	RoleOwner  ProjectRole = "OWNER"
+	RoleAdmin  ProjectRole = "ADMIN"
+	RoleMember ProjectRole = "MEMBER"
+	RoleViewer ProjectRole = "VIEWER"
+)
+
+type AssignmentOperationType string
+
+const (
+	AssignmentAssigned   AssignmentOperationType = "ASSIGNED"
+	AssignmentUnassigned AssignmentOperationType = "UNASSIGNED"
+)
+
 type User struct {
-	ID          string    `json:"id"`
-	DisplayName string    `json:"displayName"`
-	Email       string    `json:"email"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID               string     `json:"id"`
+	DisplayName      string     `json:"displayName"`
+	Email            string     `json:"email"`
+	Status           UserStatus `json:"status,omitempty"`
+	AvatarURL        *string    `json:"avatarUrl,omitempty"`
+	ProfileUpdatedAt *time.Time `json:"profileUpdatedAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        *time.Time `json:"updatedAt,omitempty"`
+}
+
+type Membership struct {
+	ID        string           `json:"id"`
+	ProjectID string           `json:"projectId"`
+	User      User             `json:"user"`
+	Role      ProjectRole      `json:"role"`
+	Status    MembershipStatus `json:"status"`
+	Version   int64            `json:"version"`
+	InvitedBy *string          `json:"invitedBy,omitempty"`
+	JoinedAt  *time.Time       `json:"joinedAt,omitempty"`
+	RemovedAt *time.Time       `json:"removedAt,omitempty"`
+	CreatedAt time.Time        `json:"createdAt"`
+	UpdatedAt time.Time        `json:"updatedAt"`
+}
+
+type AssignmentOperation struct {
+	ID           string                  `json:"id"`
+	ProjectID    string                  `json:"projectId"`
+	TaskID       string                  `json:"taskId"`
+	UserID       string                  `json:"userId"`
+	MembershipID string                  `json:"membershipId"`
+	Operation    AssignmentOperationType `json:"operation"`
+	ActorID      string                  `json:"actorId"`
+	RequestID    string                  `json:"requestId"`
+	OccurredAt   time.Time               `json:"occurredAt"`
 }
 
 type Project struct {

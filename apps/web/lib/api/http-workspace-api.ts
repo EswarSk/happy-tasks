@@ -1,7 +1,9 @@
 import type {
+  AssignmentHistoryItem,
   Comment,
   Dependency,
   Member,
+  MemberFilters,
   Page,
   Project,
   Task,
@@ -15,12 +17,12 @@ import type {
 import { WorkspaceApiError } from "./types";
 import { newRequestId } from "@/lib/utils";
 
-const demoActorId = "00000000-0000-7000-8000-000000000001";
+export const demoActorId = "00000000-0000-7000-8000-000000000001";
 const fallbackMembers: Member[] = [
-  { id: demoActorId, displayName: "Avery Chen", email: "avery@example.com", color: "#5b5bd6" },
-  { id: "00000000-0000-7000-8000-000000000002", displayName: "Maya Patel", email: "maya@example.com", color: "#0f9f6e" },
+  { id: demoActorId, displayName: "Maya Chen", email: "maya@example.test", color: "#18181b" },
+  { id: "00000000-0000-7000-8000-000000000002", displayName: "Avery Chen", email: "avery@example.test", color: "#52525b" },
 ];
-const memberColors = ["#5b5bd6", "#0f9f6e", "#d97706", "#db2777", "#0284c7"];
+const memberColors = ["#18181b", "#3f3f46", "#52525b", "#71717a", "#27272a"];
 
 type ApiProject = Omit<Project, "taskCount" | "accent"> & { taskCount?: number; accent?: string };
 type ApiTask = Omit<Task, "status" | "priority" | "key" | "blockingCount"> & {
@@ -30,12 +32,39 @@ type ApiTask = Omit<Task, "status" | "priority" | "key" | "blockingCount"> & {
   blockingCount?: number;
 };
 type ApiComment = Omit<Comment, "authorId"> & { authorId?: string; author?: { id: string } };
+type ApiUser = {
+  id: string;
+  displayName: string;
+  email?: string | null;
+  status?: Member["userStatus"];
+  avatarUrl?: string | null;
+  createdAt?: string;
+};
+type ApiMembership = {
+  id: string;
+  projectId: string;
+  user: ApiUser;
+  role: Member["role"];
+  status: Member["membershipStatus"];
+};
+type LegacyApiMember = Omit<Member, "color"> & { color?: string };
 
-const normalizeProject = (project: ApiProject): Project => ({ ...project, taskCount: project.taskCount ?? 0, accent: project.accent ?? "#665cf6" });
-const normalizeMember = (member: Omit<Member, "color"> & { color?: string }, index: number): Member => ({
-  ...member,
-  color: member.color ?? memberColors[index % memberColors.length],
-});
+const normalizeProject = (project: ApiProject): Project => ({ ...project, taskCount: project.taskCount ?? 0, accent: project.accent ?? "#18181b" });
+const normalizeMember = (member: LegacyApiMember | ApiMembership, index: number): Member => {
+  if ("user" in member) {
+    return {
+      id: member.user.id,
+      membershipId: member.id,
+      displayName: member.user.displayName,
+      email: member.user.email ?? "",
+      color: memberColors[index % memberColors.length],
+      role: member.role,
+      membershipStatus: member.status,
+      userStatus: member.user.status,
+    };
+  }
+  return { ...member, color: member.color ?? memberColors[index % memberColors.length] };
+};
 const normalizeTask = (task: ApiTask): Task => ({
   ...task,
   key: task.key ?? `TSK-${task.id.replaceAll("-", "").slice(-6).toUpperCase()}`,
@@ -74,7 +103,7 @@ export class HttpWorkspaceApi implements WorkspaceApi {
 
   async bootstrap(projectId: string): Promise<WorkspaceBootstrap> {
     try {
-      const result = await this.request<{ project: ApiProject; members?: Member[]; streamCursor?: number }>(`/v1/projects/${projectId}/bootstrap`);
+      const result = await this.request<{ project: ApiProject; members?: LegacyApiMember[]; streamCursor?: number }>(`/v1/projects/${projectId}/bootstrap`);
       return {
         project: normalizeProject(result.project),
         members: result.members?.length ? result.members.map(normalizeMember) : fallbackMembers,
@@ -85,6 +114,18 @@ export class HttpWorkspaceApi implements WorkspaceApi {
       const project = await this.request<ApiProject>(`/v1/projects/${projectId}`);
       return { project: normalizeProject(project), members: fallbackMembers, streamCursor: 0 };
     }
+  }
+
+  async listMembers(projectId: string, filters: MemberFilters = {}): Promise<Page<Member>> {
+    const params = new URLSearchParams();
+    if (filters.search) params.set("q", filters.search);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.role) params.set("role", filters.role);
+    if (filters.cursor) params.set("cursor", filters.cursor);
+    params.set("limit", String(filters.limit ?? 50));
+    const page = await this.request<{ items: ApiMembership[]; nextCursor?: string }>(`/v1/projects/${projectId}/members?${params}`);
+    const items = page.items.map(normalizeMember);
+    return { items, nextCursor: page.nextCursor ?? null, totalCount: items.length };
   }
 
   async listTasks(projectId: string, filters: TaskFilters): Promise<Page<Task>> {
@@ -159,5 +200,12 @@ export class HttpWorkspaceApi implements WorkspaceApi {
       method: "DELETE",
       headers: { "Idempotency-Key": newRequestId() },
     });
+  }
+
+  async listAssignmentHistory(projectId: string, taskId: string, cursor?: string): Promise<Page<AssignmentHistoryItem>> {
+    const params = new URLSearchParams({ limit: "50" });
+    if (cursor) params.set("cursor", cursor);
+    const page = await this.request<{ items: AssignmentHistoryItem[]; nextCursor?: string }>(`/v1/projects/${projectId}/tasks/${taskId}/assignment-history?${params}`);
+    return { items: page.items, nextCursor: page.nextCursor ?? null, totalCount: page.items.length };
   }
 }

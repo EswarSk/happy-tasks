@@ -7,7 +7,8 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 ## What is included
 
 - Multiple projects with project creation and a responsive project switcher.
-- Task creation, editing, deletion, search, status/priority filters, assignees, tags, custom fields, and optimistic UI.
+- Task creation, editing, deletion, search, status/priority filters, explicit assignee add/remove controls, tags, custom fields, and optimistic UI.
+- Stable user identities, soft membership lifecycle (active/invited/suspended/removed), role enforcement, final-owner protection, paginated member search, and append-only assignment history.
 - Dependency creation/removal with transactional cycle prevention.
 - Append-oriented comments with cursor-ready indexing and near-real-time delivery.
 - Conflict detection through `If-Match` versions and retry-safe writes through idempotency keys.
@@ -167,4 +168,4 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 
 ## Deliberate boundaries
 
-Authentication is represented by a deterministic demo actor header; production identity/session management is out of scope. Presence, live cursors, comment reactions, rich-text CRDT editing, global search, and broker-backed fan-out are documented extension points, not falsely claimed as completed features. The current design keeps those additions isolated so they do not force a rewrite of the core model.
+Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Presence, live cursors, comment reactions, rich-text CRDT editing, global search, and broker-backed fan-out are documented extension points, not falsely claimed as completed features. The current design keeps those additions isolated so they do not force a rewrite of the core model.

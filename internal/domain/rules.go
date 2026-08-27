@@ -20,6 +20,70 @@ func ValidPriority(priority Priority) bool {
 	}
 }
 
+func ValidMembershipStatus(status MembershipStatus) bool {
+	switch status {
+	case MembershipActive, MembershipInvited, MembershipSuspended, MembershipRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidProjectRole(role ProjectRole) bool {
+	switch role {
+	case RoleOwner, RoleAdmin, RoleMember, RoleViewer:
+		return true
+	default:
+		return false
+	}
+}
+
+func CanMutateProject(role ProjectRole) bool {
+	return role == RoleOwner || role == RoleAdmin || role == RoleMember
+}
+
+func CanManageMembers(role ProjectRole) bool {
+	return role == RoleOwner || role == RoleAdmin
+}
+
+func CanManageMembership(actorRole, targetRole, nextRole ProjectRole) bool {
+	if actorRole == RoleOwner {
+		return true
+	}
+	if actorRole != RoleAdmin {
+		return false
+	}
+	return targetRole != RoleOwner && nextRole != RoleOwner
+}
+
+func CanTransitionMembership(from, to MembershipStatus) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case MembershipInvited:
+		return to == MembershipActive || to == MembershipRemoved
+	case MembershipActive:
+		return to == MembershipSuspended || to == MembershipRemoved
+	case MembershipSuspended:
+		return to == MembershipActive || to == MembershipRemoved
+	case MembershipRemoved:
+		return to == MembershipInvited
+	default:
+		return false
+	}
+}
+
+func ValidateMembership(role ProjectRole, status MembershipStatus) error {
+	if !ValidProjectRole(role) {
+		return Validation("VALIDATION_ERROR", "Unknown project role.", map[string]any{"field": "role"})
+	}
+	if !ValidMembershipStatus(status) {
+		return Validation("VALIDATION_ERROR", "Unknown membership status.", map[string]any{"field": "status"})
+	}
+	return nil
+}
+
 func CanTransition(from, to Status) bool {
 	if from == to {
 		return true

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,6 +36,7 @@ func main() {
 		service,
 		hub,
 		env("DEFAULT_ACTOR_ID", fallbackActorID),
+		envBool("ALLOW_DEMO_ACTOR_OVERRIDE", false),
 		splitCSV(env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
 		logger,
 	)
@@ -104,4 +106,16 @@ func splitCSV(value string) []string {
 		}
 	}
 	return result
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

@@ -9,7 +9,7 @@ interface AvatarProps {
   className?: string;
 }
 
-export function Avatar({ name, color = "#665cf6", className }: AvatarProps) {
+export function Avatar({ name, color = "#52525b", className }: AvatarProps) {
   return (
     <AvatarPrimitive.Root className={cn("inline-flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-[var(--panel)]", className)}>
       <AvatarPrimitive.Fallback

@@ -1,20 +1,104 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f8fa;
+  color-scheme: light;
+  --background: #ffffff;
   --panel: #ffffff;
-  --sidebar: #f8f9fb;
-  --surface-muted: #fafbfc;
-  --hover: #f2f4f7;
-  --text: #172033;
-  --text-secondary: #4c566a;
-  --text-muted: #7c879b;
-  --border: #e1e5eb;
-  --border-subtle: #edf0f4;
-  --brand: #6258e8;
-  --brand-hover: #5147d6;
-  --focus: #8179ee;
+  --sidebar: #ffffff;
+  --surface-muted: #f4f4f5;
+  --surface-raised: #ffffff;
+  --hover: #f4f4f5;
+  --selected: #f4f4f5;
+  --text: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --border: #e4e4e7;
+  --border-subtle: #f4f4f5;
+  --brand: #18181b;
+  --brand-hover: #27272a;
+  --brand-soft: #f4f4f5;
+  --focus: #18181b;
+  --focus-soft: rgb(24 24 27 / .16);
+  --overlay: rgb(9 9 11 / .42);
+  --shadow: rgb(24 24 27 / .06);
+  --shadow-strong: rgb(24 24 27 / .16);
+  --skeleton: #f4f4f5;
+  --success: #52525b;
+  --success-bg: #f4f4f5;
+  --success-border: #d4d4d8;
+  --success-text: #3f3f46;
+  --warning: #d97706;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-text: #a16207;
+  --danger: #e11d48;
+  --danger-hover: #be123c;
+  --danger-bg: #fff1f2;
+  --danger-border: #fecdd3;
+  --danger-text: #be123c;
+  --info-bg: #f4f4f5;
+  --info-border: #d4d4d8;
+  --info-text: #52525b;
   --foreground: var(--text);
+  --radius: 1rem;
+
+  --card: var(--panel);
+  --card-foreground: var(--text);
+  --primary: var(--brand);
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-hover: #e4e4e7;
+  --secondary-foreground: var(--text);
+  --muted: #f4f4f5;
+  --muted-foreground: var(--text-muted);
+  --accent: var(--brand-soft);
+  --accent-foreground: var(--text);
+  --ring: var(--focus);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #09090b;
+  --panel: #09090b;
+  --sidebar: #09090b;
+  --surface-muted: #18181b;
+  --surface-raised: #09090b;
+  --hover: #27272a;
+  --selected: #27272a;
+  --text: #f4f4f5;
+  --text-secondary: #d4d4d8;
+  --text-muted: #a1a1aa;
+  --border: #27272a;
+  --border-subtle: #1f1f22;
+  --brand: #fafafa;
+  --brand-hover: #e4e4e7;
+  --brand-soft: #27272a;
+  --focus: #fafafa;
+  --focus-soft: rgb(250 250 250 / .24);
+  --overlay: rgb(0 0 0 / .7);
+  --shadow: rgb(0 0 0 / .24);
+  --shadow-strong: rgb(0 0 0 / .48);
+  --skeleton: #18181b;
+  --success: #a1a1aa;
+  --success-bg: #27272a;
+  --success-border: #3f3f46;
+  --success-text: #e4e4e7;
+  --warning: #fbbf24;
+  --warning-bg: #29210f;
+  --warning-border: #61491a;
+  --warning-text: #fcd34d;
+  --danger: #fb7185;
+  --danger-hover: #f43f5e;
+  --danger-bg: #2b141b;
+  --danger-border: #652337;
+  --danger-text: #fda4af;
+  --info-bg: #27272a;
+  --info-border: #3f3f46;
+  --info-text: #d4d4d8;
+  --primary-foreground: #18181b;
+  --secondary: #27272a;
+  --secondary-hover: #3f3f46;
+  --muted: #18181b;
 }
 
 @theme inline {
@@ -32,6 +116,7 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   text-rendering: optimizeLegibility;
+  letter-spacing: -0.01em;
 }
 button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
@@ -44,9 +129,21 @@ button { cursor: pointer; }
 .section-label { font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted); }
 .contain-strict { contain: strict; }
 
+::selection { background: var(--brand-soft); color: var(--text); }
+
+.theme-icon-sun { display: none; }
+[data-theme="dark"] .theme-icon-sun { display: block; }
+[data-theme="dark"] .theme-icon-moon { display: none; }
+
+@keyframes enter-up {
+  from { opacity: 0; transform: translateY(4px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-enter-up { animation: enter-up .18s ease-out both; }
+
 @keyframes pulse-dot {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(16 185 129 / 0); }
-  50% { box-shadow: 0 0 0 4px rgb(16 185 129 / .13); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(82 82 91 / 0); }
+  50% { box-shadow: 0 0 0 4px rgb(82 82 91 / .13); }
 }
 .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 

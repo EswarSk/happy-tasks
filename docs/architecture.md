@@ -1,6 +1,6 @@
 # Collaborative Task Management System - Technical Design
 
-**Status:** Proposed for take-home implementation
+**Status:** Implemented baseline for the take-home; production hardening seams are called out below.
 
 **Backend:** Go
 
@@ -8,7 +8,7 @@
 
 **Primary database:** PostgreSQL
 
-**Last updated:** 2026-08-26
+**Last updated:** 2026-08-27
 
 ## 1. Executive summary
 
@@ -224,7 +224,12 @@ email citext unique not null
 created_at timestamptz not null
 ```
 
-The take-home uses seeded demo users and a clearly labeled development identity selector. Authentication is intentionally deferred.
+The take-home uses seeded demo users and a clearly labeled development identity
+selector. Local requests resolve to `DEFAULT_ACTOR_ID`; arbitrary
+`X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is
+explicitly enabled for multi-actor tests. The `user_identities`
+provider/subject table is the seam for a verified OIDC/JWT gateway in
+production, without coupling the assignment to an auth vendor.
 
 #### `projects`
 
@@ -248,6 +253,13 @@ primary key (project_id, user_id)
 ```
 
 This makes assignee and future authorization validation explicit.
+
+Migration 00011 adds a stable membership ID, role (`OWNER`, `ADMIN`, `MEMBER`,
+`VIEWER`), lifecycle (`ACTIVE`, `INVITED`, `SUSPENDED`, `REMOVED`), timestamps,
+and a version for `If-Match` guarded lifecycle changes. Removal is soft so
+comments and assignment history keep their original identity. Reads and writes
+require an active user plus active membership; the final active owner cannot be
+removed, suspended, or demoted.
 
 #### `tasks`
 
@@ -278,6 +290,13 @@ primary key (task_id, user_id)
 foreign key (project_id, task_id) references tasks(project_id, id) on delete cascade
 foreign key (project_id, user_id) references project_members(project_id, user_id)
 ```
+
+This table is the current assignment projection. Assignment additions and
+removals are appended to `task_assignment_operations` with actor, request ID,
+stable membership ID, and server time in the same transaction. Membership
+removal removes current assignments and appends `UNASSIGNED` operations while
+incrementing affected task versions, keeping stale clients from overwriting
+the cleanup.
 
 #### `task_tags`
 

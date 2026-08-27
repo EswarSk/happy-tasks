@@ -30,4 +30,20 @@ describe("MockWorkspaceApi", () => {
     expect(deleted).toEqual({ id: task.id, deleted: true, version: task.version + 1 });
     await expect(api.getTask(project.id, task.id)).rejects.toMatchObject({ status: 404 });
   });
+
+  it("searches active members and records assign and unassign history", async () => {
+    const api = new MockWorkspaceApi();
+    const project = await api.createProject("Membership lifecycle", "Exercise assignment history.");
+    const task = await api.createTask(project.id, "Choose a clear owner");
+    const members = await api.listMembers(project.id, { search: "Avery", status: "ACTIVE", limit: 2 });
+    const member = members.items[0];
+
+    const assigned = await api.updateTask(project.id, task.id, { assigneeIds: [member.id], expectedVersion: task.version });
+    await api.updateTask(project.id, task.id, { assigneeIds: [], expectedVersion: assigned.version });
+    const history = await api.listAssignmentHistory(project.id, task.id);
+
+    expect(members.items).toHaveLength(1);
+    expect(history.items.map((item) => item.operation)).toEqual(["UNASSIGNED", "ASSIGNED"]);
+    expect(history.items.every((item) => item.userId === member.id)).toBe(true);
+  });
 });

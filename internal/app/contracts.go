@@ -42,6 +42,16 @@ type CommentCursor struct {
 	ID        string
 }
 
+type MemberCursor struct {
+	DisplayName string
+	ID          string
+}
+
+type AssignmentCursor struct {
+	OccurredAt time.Time
+	ID         string
+}
+
 type TaskFilter struct {
 	Status   *domain.Status
 	Priority *domain.Priority
@@ -52,6 +62,19 @@ type TaskFilter struct {
 
 type CommentFilter struct {
 	Cursor   *CommentCursor
+	PageSize int
+}
+
+type MemberFilter struct {
+	Search   string
+	Status   *domain.MembershipStatus
+	Role     *domain.ProjectRole
+	Cursor   *MemberCursor
+	PageSize int
+}
+
+type AssignmentFilter struct {
+	Cursor   *AssignmentCursor
 	PageSize int
 }
 
@@ -95,6 +118,18 @@ type CreateCommentInput struct {
 	Body string
 }
 
+type CreateMembershipInput struct {
+	UserID string
+	Role   domain.ProjectRole
+	Status domain.MembershipStatus
+}
+
+type UpdateMembershipInput struct {
+	Role            *domain.ProjectRole
+	Status          *domain.MembershipStatus
+	ExpectedVersion int64
+}
+
 // Store is transaction scoped. The PostgreSQL implementation is the only
 // package that knows SQL; application services own orchestration and policy.
 type Store interface {
@@ -103,8 +138,14 @@ type Store interface {
 	PutIdempotency(context.Context, string, string, []byte, int, json.RawMessage) error
 
 	ActorExists(context.Context, string) (bool, error)
-	IsProjectMember(context.Context, string, string) (bool, error)
+	GetActiveMembership(context.Context, string, string) (domain.Membership, error)
 	AreProjectMembers(context.Context, string, []string) (bool, error)
+	LockOwnerInvariant(context.Context, string) error
+	GetMembership(context.Context, string, string) (domain.Membership, error)
+	CountActiveOwners(context.Context, string) (int, error)
+	CreateMembership(context.Context, string, CreateMembershipInput, string) (domain.Membership, error)
+	UpdateMembership(context.Context, string, string, domain.ProjectRole, domain.MembershipStatus, int64, string) (domain.Membership, error)
+	UnassignProjectMember(context.Context, string, string, string, string) ([]domain.AssignmentOperation, error)
 
 	CreateProject(context.Context, CreateProjectInput, string) (domain.Project, error)
 	InitProjectStream(context.Context, string) error
@@ -113,6 +154,7 @@ type Store interface {
 	GetTask(context.Context, string, string) (domain.Task, error)
 	UpdateTask(context.Context, string, string, int64, UpdateTaskInput) (domain.Task, error)
 	DeleteTask(context.Context, string, string, int64) (domain.Task, error)
+	ReplaceTaskAssignees(context.Context, string, string, []string, string, string) ([]domain.AssignmentOperation, error)
 
 	LockDependencyGraph(context.Context, string) error
 	DependencyExists(context.Context, string, string, string) (bool, error)
@@ -132,6 +174,8 @@ type Database interface {
 	ListTasks(context.Context, string, TaskFilter) ([]domain.Task, error)
 	GetTask(context.Context, string, string) (domain.Task, error)
 	ListComments(context.Context, string, string, CommentFilter) ([]domain.Comment, error)
+	ListMembers(context.Context, string, MemberFilter) ([]domain.Membership, error)
+	ListAssignmentOperations(context.Context, string, string, AssignmentFilter) ([]domain.AssignmentOperation, error)
 	ListEvents(context.Context, string, int64, int) ([]domain.Event, error)
 	ProjectStreamCursor(context.Context, string) (int64, error)
 	Ping(context.Context) error

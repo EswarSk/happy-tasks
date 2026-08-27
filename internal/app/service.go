@@ -198,6 +198,13 @@ func (s *Service) CreateTask(ctx context.Context, meta MutationMeta, projectID s
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
+		if _, err := store.ReplaceTaskAssignees(ctx, projectID, task.ID, input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		task, err = store.GetTask(ctx, projectID, task.ID)
+		if err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
 		return mutationValue[domain.Task]{
 			value:  task,
 			status: http.StatusCreated,
@@ -257,6 +264,15 @@ func (s *Service) UpdateTask(ctx context.Context, meta MutationMeta, projectID, 
 		updated, err := store.UpdateTask(ctx, projectID, taskID, expectedVersion, input)
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
+		}
+		if input.AssigneeIDs != nil {
+			if _, err := store.ReplaceTaskAssignees(ctx, projectID, taskID, *input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
+				return mutationValue[domain.Task]{}, err
+			}
+			updated, err = store.GetTask(ctx, projectID, taskID)
+			if err != nil {
+				return mutationValue[domain.Task]{}, err
+			}
 		}
 		return mutationValue[domain.Task]{
 			value:  updated,
@@ -382,6 +398,160 @@ func (s *Service) CreateComment(ctx context.Context, meta MutationMeta, projectI
 	})
 }
 
+func (s *Service) ListMembers(ctx context.Context, actorID, projectID string, filter MemberFilter) (domain.Page[domain.Membership], error) {
+	if _, err := s.db.GetProject(ctx, actorID, projectID); err != nil {
+		return domain.Page[domain.Membership]{}, err
+	}
+	filter.Search = strings.TrimSpace(filter.Search)
+	if len(filter.Search) > 200 {
+		return domain.Page[domain.Membership]{}, domain.Validation("VALIDATION_ERROR", "Member search must not exceed 200 characters.", map[string]any{"field": "q"})
+	}
+	filter.PageSize = normalizePageSize(filter.PageSize)
+	requested := filter.PageSize
+	filter.PageSize++
+	items, err := s.db.ListMembers(ctx, projectID, filter)
+	if err != nil {
+		return domain.Page[domain.Membership]{}, err
+	}
+	page := domain.Page[domain.Membership]{Items: items}
+	if len(items) > requested {
+		page.Items = items[:requested]
+		last := page.Items[len(page.Items)-1]
+		page.NextCursor = EncodeMemberCursor(strings.ToLower(last.User.DisplayName), last.ID)
+	}
+	return page, nil
+}
+
+func (s *Service) CreateMembership(ctx context.Context, meta MutationMeta, projectID string, input CreateMembershipInput) (Mutation[domain.Membership], error) {
+	if input.Status == "" {
+		input.Status = domain.MembershipInvited
+	}
+	if input.Status != domain.MembershipInvited && input.Status != domain.MembershipActive {
+		return Mutation[domain.Membership]{}, domain.Validation("INVALID_MEMBERSHIP_STATUS", "A membership must be created as INVITED or ACTIVE.", nil)
+	}
+	if err := domain.ValidateMembership(input.Role, input.Status); err != nil {
+		return Mutation[domain.Membership]{}, err
+	}
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Membership], error) {
+		actor, err := requireMembershipManager(ctx, store, projectID, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		if !domain.CanManageMembership(actor.Role, domain.RoleMember, input.Role) {
+			return mutationValue[domain.Membership]{}, insufficientRole("Only an owner can grant the OWNER role.")
+		}
+		if input.Role == domain.RoleOwner {
+			if err := store.LockOwnerInvariant(ctx, projectID); err != nil {
+				return mutationValue[domain.Membership]{}, err
+			}
+		}
+		exists, err := store.ActorExists(ctx, input.UserID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		if !exists {
+			return mutationValue[domain.Membership]{}, domain.Validation("USER_NOT_ACTIVE", "The user does not exist or is not active.", nil)
+		}
+		membership, err := store.CreateMembership(ctx, projectID, input, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		return mutationValue[domain.Membership]{
+			value:  membership,
+			status: http.StatusCreated,
+			event:  EventDraft{ProjectID: projectID, Type: "membership.created", AggregateType: "membership", AggregateID: membership.ID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: membership},
+		}, nil
+	})
+}
+
+func (s *Service) UpdateMembership(ctx context.Context, meta MutationMeta, projectID, membershipID string, input UpdateMembershipInput) (Mutation[domain.Membership], error) {
+	if input.ExpectedVersion < 1 {
+		return Mutation[domain.Membership]{}, domain.Validation("PRECONDITION_REQUIRED", "A valid If-Match version is required.", nil)
+	}
+	if input.Role == nil && input.Status == nil {
+		return Mutation[domain.Membership]{}, domain.Validation("VALIDATION_ERROR", "At least one of role or status is required.", nil)
+	}
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Membership], error) {
+		actor, err := requireMembershipManager(ctx, store, projectID, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		current, err := store.GetMembership(ctx, projectID, membershipID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		nextRole, nextStatus := current.Role, current.Status
+		if input.Role != nil {
+			nextRole = *input.Role
+		}
+		if input.Status != nil {
+			nextStatus = *input.Status
+		}
+		if err := domain.ValidateMembership(nextRole, nextStatus); err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		if !domain.CanTransitionMembership(current.Status, nextStatus) {
+			return mutationValue[domain.Membership]{}, domain.Validation("INVALID_MEMBERSHIP_TRANSITION", "The requested membership lifecycle transition is not allowed.", map[string]any{"from": current.Status, "to": nextStatus})
+		}
+		if !domain.CanManageMembership(actor.Role, current.Role, nextRole) {
+			return mutationValue[domain.Membership]{}, insufficientRole("This role cannot manage an owner or grant the OWNER role.")
+		}
+		if current.Role == domain.RoleOwner || nextRole == domain.RoleOwner {
+			if err := store.LockOwnerInvariant(ctx, projectID); err != nil {
+				return mutationValue[domain.Membership]{}, err
+			}
+		}
+		if current.Role == domain.RoleOwner && current.Status == domain.MembershipActive && (nextRole != domain.RoleOwner || nextStatus != domain.MembershipActive) {
+			owners, err := store.CountActiveOwners(ctx, projectID)
+			if err != nil {
+				return mutationValue[domain.Membership]{}, err
+			}
+			if owners <= 1 {
+				return mutationValue[domain.Membership]{}, domain.Validation("FINAL_ACTIVE_OWNER", "The final active owner cannot be demoted, suspended, or removed.", nil)
+			}
+		}
+		membership, err := store.UpdateMembership(ctx, projectID, membershipID, nextRole, nextStatus, input.ExpectedVersion, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		if current.Status == domain.MembershipActive && nextStatus != domain.MembershipActive {
+			if _, err := store.UnassignProjectMember(ctx, projectID, current.User.ID, meta.ActorID, meta.RequestID); err != nil {
+				return mutationValue[domain.Membership]{}, err
+			}
+		}
+		return mutationValue[domain.Membership]{
+			value:  membership,
+			status: http.StatusOK,
+			event:  EventDraft{ProjectID: projectID, Type: "membership.updated", AggregateType: "membership", AggregateID: membership.ID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: membership},
+		}, nil
+	})
+}
+
+func (s *Service) RemoveMembership(ctx context.Context, meta MutationMeta, projectID, membershipID string, expectedVersion int64) (Mutation[domain.Membership], error) {
+	status := domain.MembershipRemoved
+	return s.UpdateMembership(ctx, meta, projectID, membershipID, UpdateMembershipInput{Status: &status, ExpectedVersion: expectedVersion})
+}
+
+func (s *Service) ListAssignmentHistory(ctx context.Context, actorID, projectID, taskID string, filter AssignmentFilter) (domain.Page[domain.AssignmentOperation], error) {
+	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
+		return domain.Page[domain.AssignmentOperation]{}, err
+	}
+	filter.PageSize = normalizePageSize(filter.PageSize)
+	requested := filter.PageSize
+	filter.PageSize++
+	items, err := s.db.ListAssignmentOperations(ctx, projectID, taskID, filter)
+	if err != nil {
+		return domain.Page[domain.AssignmentOperation]{}, err
+	}
+	page := domain.Page[domain.AssignmentOperation]{Items: items}
+	if len(items) > requested {
+		page.Items = items[:requested]
+		last := page.Items[len(page.Items)-1]
+		page.NextCursor = EncodeAssignmentCursor(last.OccurredAt, last.ID)
+	}
+	return page, nil
+}
+
 func (s *Service) ListEvents(ctx context.Context, actorID, projectID string, after int64, limit int) ([]domain.Event, error) {
 	if _, err := s.db.GetProject(ctx, actorID, projectID); err != nil {
 		return nil, err
@@ -409,14 +579,29 @@ func (s *Service) StreamCursor(ctx context.Context, actorID, projectID string) (
 func (s *Service) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
 
 func requireMember(ctx context.Context, store Store, projectID, actorID string) error {
-	ok, err := store.IsProjectMember(ctx, projectID, actorID)
+	membership, err := store.GetActiveMembership(ctx, projectID, actorID)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return domain.ErrForbidden
+	if !domain.CanMutateProject(membership.Role) {
+		return insufficientRole("VIEWER memberships cannot mutate project resources.")
 	}
 	return nil
+}
+
+func requireMembershipManager(ctx context.Context, store Store, projectID, actorID string) (domain.Membership, error) {
+	membership, err := store.GetActiveMembership(ctx, projectID, actorID)
+	if err != nil {
+		return domain.Membership{}, err
+	}
+	if !domain.CanManageMembers(membership.Role) {
+		return domain.Membership{}, insufficientRole("Only OWNER and ADMIN memberships can manage members.")
+	}
+	return membership, nil
+}
+
+func insufficientRole(message string) error {
+	return domain.Validation("INSUFFICIENT_ROLE", message, nil)
 }
 
 func requireMembers(ctx context.Context, store Store, projectID string, actorIDs []string) error {

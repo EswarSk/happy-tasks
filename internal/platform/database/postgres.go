@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/eswaravegi/happy-task-management/internal/app"
 	"github.com/eswaravegi/happy-task-management/internal/domain"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,8 +61,11 @@ func (p *Postgres) ListProjects(ctx context.Context, actorID string, limit int) 
 		       count(t.id) AS task_count
 		FROM projects p
 		JOIN project_members pm ON pm.project_id = p.id
+		JOIN users actor ON actor.id = pm.user_id
 		LEFT JOIN tasks t ON t.project_id = p.id
 		WHERE pm.user_id = $1
+		  AND pm.status = 'ACTIVE'
+		  AND actor.status = 'ACTIVE'
 		GROUP BY p.id
 		ORDER BY p.updated_at DESC, p.id DESC
 		LIMIT $2`, actorID, limit)
@@ -99,15 +104,21 @@ func (p *Postgres) Bootstrap(ctx context.Context, actorID, projectID string, fil
 		return result, err
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT u.id, u.display_name, u.email, u.created_at
+		SELECT u.id, u.display_name, u.email, u.status, u.avatar_url,
+		       u.profile_updated_at, u.created_at, u.updated_at
 		FROM project_members pm JOIN users u ON u.id = pm.user_id
-		WHERE pm.project_id = $1 ORDER BY u.display_name, u.id`, projectID)
+		WHERE pm.project_id = $1
+		  AND pm.status = 'ACTIVE'
+		  AND u.status = 'ACTIVE'
+		ORDER BY u.display_name, u.id
+		LIMIT 100`, projectID)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
 		var user domain.User
-		if err := rows.Scan(&user.ID, &user.DisplayName, &user.Email, &user.CreatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.DisplayName, &user.Email, &user.Status, &user.AvatarURL,
+			&user.ProfileUpdatedAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
 			rows.Close()
 			return result, err
 		}
@@ -131,7 +142,10 @@ func getProject(ctx context.Context, q querier, actorID, projectID string) (doma
 		SELECT p.id, p.name, p.description, p.metadata, p.version, p.created_at, p.updated_at
 		FROM projects p
 		JOIN project_members pm ON pm.project_id = p.id
-		WHERE p.id = $1 AND pm.user_id = $2`, projectID, actorID))
+		JOIN users actor ON actor.id = pm.user_id
+		WHERE p.id = $1 AND pm.user_id = $2
+		  AND pm.status = 'ACTIVE'
+		  AND actor.status = 'ACTIVE'`, projectID, actorID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Project{}, domain.ErrNotFound
 	}
@@ -211,6 +225,74 @@ func (p *Postgres) ListComments(ctx context.Context, projectID, taskID string, f
 	items := make([]domain.Comment, 0, filter.PageSize)
 	for rows.Next() {
 		item, err := scanComment(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (p *Postgres) ListMembers(ctx context.Context, projectID string, filter app.MemberFilter) ([]domain.Membership, error) {
+	var status, role any
+	if filter.Status != nil {
+		status = string(*filter.Status)
+	}
+	if filter.Role != nil {
+		role = string(*filter.Role)
+	}
+	var cursorName, cursorID any
+	if filter.Cursor != nil {
+		cursorName, cursorID = filter.Cursor.DisplayName, filter.Cursor.ID
+	}
+	rows, err := p.pool.Query(ctx, membershipSelect+`
+		WHERE membership.project_id = $1
+		  AND ($2::project_membership_status IS NULL OR membership.status = $2)
+		  -- The active directory is the assignable directory. Keep historical and
+		  -- lifecycle rows queryable, but never advertise a globally suspended or
+		  -- deleted user as active when callers request ACTIVE memberships.
+		  AND ($2::project_membership_status IS DISTINCT FROM 'ACTIVE' OR person.status = 'ACTIVE')
+		  AND ($3::text IS NULL OR membership.role = $3)
+		  AND ($4::text = '' OR person.display_name ILIKE '%' || $4 || '%'
+		       OR person.email::text ILIKE '%' || $4 || '%')
+		  AND ($5::text IS NULL OR (lower(person.display_name), membership.id) > ($5, $6::uuid))
+		ORDER BY lower(person.display_name), membership.id
+		LIMIT $7`, projectID, status, role, filter.Search, cursorName, cursorID, filter.PageSize)
+	if err != nil {
+		return nil, fmt.Errorf("list project members: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.Membership, 0, filter.PageSize)
+	for rows.Next() {
+		item, err := scanMembership(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (p *Postgres) ListAssignmentOperations(ctx context.Context, projectID, taskID string, filter app.AssignmentFilter) ([]domain.AssignmentOperation, error) {
+	var cursorTime, cursorID any
+	if filter.Cursor != nil {
+		cursorTime, cursorID = filter.Cursor.OccurredAt, filter.Cursor.ID
+	}
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, project_id, task_id, user_id, membership_id, operation,
+		       actor_id, request_id, occurred_at
+		FROM task_assignment_operations
+		WHERE project_id = $1 AND task_id = $2
+		  AND ($3::timestamptz IS NULL OR (occurred_at, id) < ($3, $4::uuid))
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $5`, projectID, taskID, cursorTime, cursorID, filter.PageSize)
+	if err != nil {
+		return nil, fmt.Errorf("list assignment operations: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.AssignmentOperation, 0, filter.PageSize)
+	for rows.Next() {
+		item, err := scanAssignmentOperation(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -311,20 +393,126 @@ func (s *store) PutIdempotency(ctx context.Context, actorID, key string, hash []
 
 func (s *store) ActorExists(ctx context.Context, actorID string) (bool, error) {
 	var exists bool
-	err := s.q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, actorID).Scan(&exists)
+	err := s.q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'ACTIVE')`, actorID).Scan(&exists)
 	return exists, err
 }
 
-func (s *store) IsProjectMember(ctx context.Context, projectID, actorID string) (bool, error) {
-	var exists bool
-	err := s.q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2)`, projectID, actorID).Scan(&exists)
-	return exists, err
+func (s *store) GetActiveMembership(ctx context.Context, projectID, actorID string) (domain.Membership, error) {
+	item, err := scanMembership(s.q.QueryRow(ctx, membershipSelect+`
+		WHERE membership.project_id = $1
+		  AND membership.user_id = $2
+		  AND membership.status = 'ACTIVE'
+		  AND person.status = 'ACTIVE'
+		FOR SHARE OF membership, person`, projectID, actorID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Membership{}, domain.ErrForbidden
+	}
+	return item, err
 }
 
 func (s *store) AreProjectMembers(ctx context.Context, projectID string, actorIDs []string) (bool, error) {
+	rows, err := s.q.Query(ctx, `
+		SELECT membership.user_id
+		FROM project_members membership
+		JOIN users person ON person.id = membership.user_id
+		WHERE membership.project_id = $1
+		  AND membership.user_id = ANY($2::uuid[])
+		  AND membership.status = 'ACTIVE'
+		  AND person.status = 'ACTIVE'
+		ORDER BY membership.user_id
+		FOR SHARE OF membership, person`, projectID, actorIDs)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return count == len(actorIDs), nil
+}
+
+func (s *store) LockOwnerInvariant(ctx context.Context, projectID string) error {
+	_, err := s.q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('membership-owner:' || $1::text, 0))`, projectID)
+	return err
+}
+
+func (s *store) GetMembership(ctx context.Context, projectID, membershipID string) (domain.Membership, error) {
+	item, err := scanMembership(s.q.QueryRow(ctx, membershipSelect+`
+		WHERE membership.project_id = $1 AND membership.id = $2
+		FOR UPDATE OF membership`, projectID, membershipID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Membership{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
+func (s *store) CountActiveOwners(ctx context.Context, projectID string) (int, error) {
 	var count int
-	err := s.q.QueryRow(ctx, `SELECT count(DISTINCT user_id) FROM project_members WHERE project_id = $1 AND user_id = ANY($2::uuid[])`, projectID, actorIDs).Scan(&count)
-	return count == len(actorIDs), err
+	err := s.q.QueryRow(ctx, `
+		SELECT count(*)
+		FROM project_members membership
+		JOIN users person ON person.id = membership.user_id
+		WHERE membership.project_id = $1
+		  AND membership.status = 'ACTIVE'
+		  AND membership.role = 'OWNER'
+		  AND person.status = 'ACTIVE'`, projectID).Scan(&count)
+	return count, err
+}
+
+func (s *store) CreateMembership(ctx context.Context, projectID string, input app.CreateMembershipInput, actorID string) (domain.Membership, error) {
+	var membershipID string
+	err := s.q.QueryRow(ctx, `
+		INSERT INTO project_members(
+		  project_id, user_id, role, status, invited_by, joined_at, removed_at
+		)
+		VALUES (
+		  $1, $2, $3, $4, $5,
+		  CASE WHEN $4::project_membership_status = 'ACTIVE' THEN now() ELSE NULL END,
+		  NULL
+		)
+		RETURNING id`, projectID, input.UserID, input.Role, input.Status, actorID).Scan(&membershipID)
+	if err != nil {
+		return domain.Membership{}, mapConstraintError(err)
+	}
+	return s.GetMembership(ctx, projectID, membershipID)
+}
+
+func (s *store) UpdateMembership(ctx context.Context, projectID, membershipID string, role domain.ProjectRole, status domain.MembershipStatus, expectedVersion int64, actorID string) (domain.Membership, error) {
+	command, err := s.q.Exec(ctx, `
+		UPDATE project_members SET
+		  role = $3,
+		  status = $4,
+		  version = version + 1,
+		  invited_by = CASE
+		    WHEN status = 'REMOVED' AND $4::project_membership_status = 'INVITED' THEN $5
+		    ELSE invited_by
+		  END,
+		  joined_at = CASE
+		    WHEN $4::project_membership_status = 'INVITED' THEN NULL
+		    WHEN $4::project_membership_status = 'ACTIVE' THEN COALESCE(joined_at, now())
+		    ELSE joined_at
+		  END,
+		  removed_at = CASE
+		    WHEN $4::project_membership_status = 'REMOVED' THEN now()
+		    ELSE NULL
+		  END,
+		  updated_at = now()
+		WHERE project_id = $1 AND id = $2 AND version = $6`, projectID, membershipID, role, status, actorID, expectedVersion)
+	if err != nil {
+		return domain.Membership{}, mapConstraintError(err)
+	}
+	if command.RowsAffected() == 0 {
+		current, getErr := s.GetMembership(ctx, projectID, membershipID)
+		if getErr != nil {
+			return domain.Membership{}, getErr
+		}
+		return domain.Membership{}, domain.Validation("VERSION_CONFLICT", "The membership changed before it could be updated.", map[string]any{"current": current, "currentVersion": current.Version})
+	}
+	return s.GetMembership(ctx, projectID, membershipID)
 }
 
 func (s *store) CreateProject(ctx context.Context, input app.CreateProjectInput, actorID string) (domain.Project, error) {
@@ -339,7 +527,9 @@ func (s *store) CreateProject(ctx context.Context, input app.CreateProjectInput,
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("create project: %w", err)
 	}
-	if _, err := s.q.Exec(ctx, `INSERT INTO project_members(project_id, user_id, role) VALUES ($1, $2, 'OWNER')`, item.ID, actorID); err != nil {
+	if _, err := s.q.Exec(ctx, `
+		INSERT INTO project_members(project_id, user_id, role, status, invited_by, joined_at)
+		VALUES ($1, $2, 'OWNER', 'ACTIVE', $2, now())`, item.ID, actorID); err != nil {
 		return domain.Project{}, fmt.Errorf("add project owner: %w", err)
 	}
 	return item, nil
@@ -360,9 +550,6 @@ func (s *store) CreateTask(ctx context.Context, projectID string, input app.Crea
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, input.ID, projectID, input.Title, input.Description, input.Status, input.Priority, customFields, actorID)
 	if err != nil {
 		return domain.Task{}, mapConstraintError(err)
-	}
-	if err := replaceTaskAssignees(ctx, s.q, projectID, input.ID, input.AssigneeIDs); err != nil {
-		return domain.Task{}, err
 	}
 	if err := replaceTaskTags(ctx, s.q, projectID, input.ID, input.Tags); err != nil {
 		return domain.Task{}, err
@@ -410,11 +597,6 @@ func (s *store) UpdateTask(ctx context.Context, projectID, taskID string, expect
 		}
 		return domain.Task{}, domain.Validation("VERSION_CONFLICT", "The task changed after this client loaded it.", map[string]any{"current": current, "currentVersion": current.Version})
 	}
-	if input.AssigneeIDs != nil {
-		if err := replaceTaskAssignees(ctx, s.q, projectID, taskID, *input.AssigneeIDs); err != nil {
-			return domain.Task{}, err
-		}
-	}
 	if input.Tags != nil {
 		if err := replaceTaskTags(ctx, s.q, projectID, taskID, *input.Tags); err != nil {
 			return domain.Task{}, err
@@ -440,6 +622,128 @@ func (s *store) DeleteTask(ctx context.Context, projectID, taskID string, expect
 	}
 	current.Version++
 	return current, nil
+}
+
+func (s *store) ReplaceTaskAssignees(ctx context.Context, projectID, taskID string, desiredUserIDs []string, actorID, requestID string) ([]domain.AssignmentOperation, error) {
+	rows, err := s.q.Query(ctx, `
+		SELECT user_id
+		FROM task_assignees
+		WHERE project_id = $1 AND task_id = $2
+		ORDER BY user_id
+		FOR UPDATE`, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	current := make(map[string]struct{})
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		current[userID] = struct{}{}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	desired := make(map[string]struct{}, len(desiredUserIDs))
+	for _, userID := range desiredUserIDs {
+		desired[userID] = struct{}{}
+	}
+	added, removed := make([]string, 0), make([]string, 0)
+	for userID := range desired {
+		if _, exists := current[userID]; !exists {
+			added = append(added, userID)
+		}
+	}
+	for userID := range current {
+		if _, exists := desired[userID]; !exists {
+			removed = append(removed, userID)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+
+	operations := make([]domain.AssignmentOperation, 0, len(added)+len(removed))
+	for _, userID := range removed {
+		membershipID, err := membershipIDForUser(ctx, s.q, projectID, userID, false)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.q.Exec(ctx, `DELETE FROM task_assignees WHERE project_id = $1 AND task_id = $2 AND user_id = $3`, projectID, taskID, userID); err != nil {
+			return nil, err
+		}
+		operation, err := insertAssignmentOperation(ctx, s.q, projectID, taskID, userID, membershipID, domain.AssignmentUnassigned, actorID, requestID)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, operation)
+	}
+	for _, userID := range added {
+		membershipID, err := membershipIDForUser(ctx, s.q, projectID, userID, true)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.q.Exec(ctx, `
+			INSERT INTO task_assignees(project_id, task_id, user_id, assigned_at, assigned_by)
+			VALUES ($1, $2, $3, now(), $4)`, projectID, taskID, userID, actorID); err != nil {
+			return nil, mapConstraintError(err)
+		}
+		operation, err := insertAssignmentOperation(ctx, s.q, projectID, taskID, userID, membershipID, domain.AssignmentAssigned, actorID, requestID)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, operation)
+	}
+	return operations, nil
+}
+
+func (s *store) UnassignProjectMember(ctx context.Context, projectID, userID, actorID, requestID string) ([]domain.AssignmentOperation, error) {
+	membershipID, err := membershipIDForUser(ctx, s.q, projectID, userID, false)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.Query(ctx, `
+		SELECT task_id
+		FROM task_assignees
+		WHERE project_id = $1 AND user_id = $2
+		ORDER BY task_id
+		FOR UPDATE`, projectID, userID)
+	if err != nil {
+		return nil, err
+	}
+	taskIDs := make([]string, 0)
+	for rows.Next() {
+		var taskID string
+		if err := rows.Scan(&taskID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		taskIDs = append(taskIDs, taskID)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	operations := make([]domain.AssignmentOperation, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		if _, err := s.q.Exec(ctx, `DELETE FROM task_assignees WHERE project_id = $1 AND task_id = $2 AND user_id = $3`, projectID, taskID, userID); err != nil {
+			return nil, err
+		}
+		// Assignment state is part of the task projection. Bump its version so
+		// clients holding an older ETag cannot overwrite the removal silently.
+		if _, err := s.q.Exec(ctx, `UPDATE tasks SET version = version + 1, updated_at = now() WHERE project_id = $1 AND id = $2`, projectID, taskID); err != nil {
+			return nil, err
+		}
+		operation, err := insertAssignmentOperation(ctx, s.q, projectID, taskID, userID, membershipID, domain.AssignmentUnassigned, actorID, requestID)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, operation)
+	}
+	return operations, nil
 }
 
 func (s *store) LockDependencyGraph(ctx context.Context, projectID string) error {
@@ -528,10 +832,31 @@ func (s *store) AppendEvent(ctx context.Context, draft app.EventDraft) (domain.E
 	return event, nil
 }
 
+const membershipSelect = `
+	SELECT membership.id, membership.project_id,
+	       person.id, person.display_name, person.email, person.status, person.avatar_url,
+	       person.profile_updated_at, person.created_at, person.updated_at,
+	       membership.role, membership.status, membership.version, membership.invited_by,
+	       membership.joined_at, membership.removed_at,
+	       membership.created_at, membership.updated_at
+	FROM project_members membership
+	JOIN users person ON person.id = membership.user_id `
+
 const taskSelect = `
 	SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
 	       t.custom_fields, t.comment_count, t.version, t.created_by, t.created_at, t.updated_at,
-	       COALESCE((SELECT jsonb_agg(ta.user_id ORDER BY ta.user_id) FROM task_assignees ta WHERE ta.project_id=t.project_id AND ta.task_id=t.id), '[]'::jsonb),
+	       COALESCE((
+	           SELECT jsonb_agg(ta.user_id ORDER BY ta.user_id)
+	           FROM task_assignees ta
+	           JOIN project_members active_membership
+	             ON active_membership.project_id = ta.project_id
+	            AND active_membership.user_id = ta.user_id
+	            AND active_membership.status = 'ACTIVE'
+	           JOIN users active_person
+	             ON active_person.id = ta.user_id
+	            AND active_person.status = 'ACTIVE'
+	           WHERE ta.project_id=t.project_id AND ta.task_id=t.id
+	       ), '[]'::jsonb),
 	       COALESCE((SELECT jsonb_agg(tt.tag ORDER BY tt.tag) FROM task_tags tt WHERE tt.project_id=t.project_id AND tt.task_id=t.id), '[]'::jsonb),
 	       COALESCE((SELECT jsonb_agg(td.depends_on_task_id ORDER BY td.depends_on_task_id) FROM task_dependencies td WHERE td.project_id=t.project_id AND td.task_id=t.id), '[]'::jsonb)
 	FROM tasks t `
@@ -601,6 +926,25 @@ func scanComment(row scanner) (domain.Comment, error) {
 	return item, err
 }
 
+func scanMembership(row scanner) (domain.Membership, error) {
+	var item domain.Membership
+	err := row.Scan(
+		&item.ID, &item.ProjectID,
+		&item.User.ID, &item.User.DisplayName, &item.User.Email, &item.User.Status, &item.User.AvatarURL,
+		&item.User.ProfileUpdatedAt, &item.User.CreatedAt, &item.User.UpdatedAt,
+		&item.Role, &item.Status, &item.Version, &item.InvitedBy,
+		&item.JoinedAt, &item.RemovedAt, &item.CreatedAt, &item.UpdatedAt,
+	)
+	return item, err
+}
+
+func scanAssignmentOperation(row scanner) (domain.AssignmentOperation, error) {
+	var item domain.AssignmentOperation
+	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.UserID, &item.MembershipID,
+		&item.Operation, &item.ActorID, &item.RequestID, &item.OccurredAt)
+	return item, err
+}
+
 func scanEvent(row scanner) (domain.Event, error) {
 	var item domain.Event
 	var actorID *string
@@ -610,18 +954,6 @@ func scanEvent(row scanner) (domain.Event, error) {
 		item.ActorID = *actorID
 	}
 	return item, err
-}
-
-func replaceTaskAssignees(ctx context.Context, q querier, projectID, taskID string, actorIDs []string) error {
-	if _, err := q.Exec(ctx, `DELETE FROM task_assignees WHERE project_id = $1 AND task_id = $2`, projectID, taskID); err != nil {
-		return err
-	}
-	for _, actorID := range actorIDs {
-		if _, err := q.Exec(ctx, `INSERT INTO task_assignees(project_id, task_id, user_id) VALUES ($1,$2,$3)`, projectID, taskID, actorID); err != nil {
-			return mapConstraintError(err)
-		}
-	}
-	return nil
 }
 
 func replaceTaskTags(ctx context.Context, q querier, projectID, taskID string, tags []string) error {
@@ -634,6 +966,41 @@ func replaceTaskTags(ctx context.Context, q querier, projectID, taskID string, t
 		}
 	}
 	return nil
+}
+
+func membershipIDForUser(ctx context.Context, q querier, projectID, userID string, requireActive bool) (string, error) {
+	var membershipID string
+	err := q.QueryRow(ctx, `
+		SELECT membership.id
+		FROM project_members membership
+		JOIN users person ON person.id = membership.user_id
+		WHERE membership.project_id = $1
+		  AND membership.user_id = $2
+		  AND (NOT $3 OR (membership.status = 'ACTIVE' AND person.status = 'ACTIVE'))`, projectID, userID, requireActive).Scan(&membershipID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.Validation("ASSIGNEE_NOT_PROJECT_MEMBER", "Every assignee must have an active project membership.", nil)
+	}
+	return membershipID, err
+}
+
+func insertAssignmentOperation(ctx context.Context, q querier, projectID, taskID, userID, membershipID string, operation domain.AssignmentOperationType, actorID, requestID string) (domain.AssignmentOperation, error) {
+	item := domain.AssignmentOperation{
+		ID: uuid.Must(uuid.NewV7()).String(), ProjectID: projectID, TaskID: taskID,
+		UserID: userID, MembershipID: membershipID, Operation: operation,
+		ActorID: actorID, RequestID: requestID,
+	}
+	err := q.QueryRow(ctx, `
+		INSERT INTO task_assignment_operations(
+		  id, project_id, task_id, user_id, membership_id,
+		  operation, actor_id, request_id
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING occurred_at`, item.ID, item.ProjectID, item.TaskID, item.UserID,
+		item.MembershipID, item.Operation, item.ActorID, item.RequestID).Scan(&item.OccurredAt)
+	if err != nil {
+		return domain.AssignmentOperation{}, mapConstraintError(err)
+	}
+	return item, nil
 }
 
 func nullableString(value string) any {

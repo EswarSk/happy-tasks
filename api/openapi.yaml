@@ -8,6 +8,7 @@ servers:
 tags:
   - name: Health
   - name: Projects
+  - name: Memberships
   - name: Tasks
   - name: Dependencies
   - name: Comments
@@ -114,6 +115,7 @@ paths:
       tags: [Tasks]
       operationId: createTask
       parameters:
+        - {$ref: "#/components/parameters/IfMatch"}
         - {$ref: "#/components/parameters/IdempotencyKey"}
         - {$ref: "#/components/parameters/RequestId"}
       requestBody:
@@ -147,6 +149,97 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Bootstrap"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/members:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Memberships]
+      operationId: listProjectMembers
+      description: Paginated membership search. Unlike the bounded bootstrap preview, this is the authoritative assignment and administration directory.
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: q
+          in: query
+          schema: {type: string, maxLength: 200}
+        - name: status
+          in: query
+          schema: {$ref: "#/components/schemas/MembershipStatus"}
+        - name: role
+          in: query
+          schema: {$ref: "#/components/schemas/ProjectRole"}
+      responses:
+        "200":
+          description: Memberships ordered by display name and stable membership ID.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MembershipPage"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      tags: [Memberships]
+      operationId: createProjectMembership
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateMembership"}
+      responses:
+        "201":
+          description: Existing active user invited or provisioned into the project.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Membership"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/members/{membershipId}:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/MembershipId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    patch:
+      tags: [Memberships]
+      operationId: updateProjectMembership
+      parameters:
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/UpdateMembership"}
+      responses:
+        "200":
+          description: Membership role or lifecycle updated. Final active owner protection applies.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Membership"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [Memberships]
+      operationId: removeProjectMembership
+      description: Soft-transitions the membership to REMOVED; the row and its references are retained.
+      parameters:
+        - {$ref: "#/components/parameters/IfMatch"}
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Soft-removed membership.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Membership"}
         default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/tasks/{taskId}:
     parameters:
@@ -285,6 +378,25 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Comment"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/assignment-history:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Tasks]
+      operationId: listAssignmentHistory
+      description: Cursor-paginated, append-only assignment operations. History is attributable even after a membership is removed.
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Newest assignment operations first.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AssignmentOperationPage"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/events:
     parameters:
       - {$ref: "#/components/parameters/ProjectId"}
@@ -338,6 +450,11 @@ components:
       schema: {type: string, format: uuid}
     TaskId:
       name: taskId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    MembershipId:
+      name: membershipId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -504,12 +621,79 @@ components:
         deleted: {type: boolean}
     User:
       type: object
-      required: [id, displayName, email, createdAt]
+      required: [id, displayName, email, status, createdAt]
       properties:
         id: {type: string, format: uuid}
         displayName: {type: string}
         email: {type: string, format: email}
+        status: {type: string, enum: [ACTIVE, SUSPENDED, DELETED]}
+        avatarUrl: {type: string, format: uri}
+        profileUpdatedAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
         createdAt: {type: string, format: date-time}
+    ProjectRole:
+      type: string
+      enum: [OWNER, ADMIN, MEMBER, VIEWER]
+    MembershipStatus:
+      type: string
+      enum: [ACTIVE, INVITED, SUSPENDED, REMOVED]
+    Membership:
+      type: object
+      required: [id, projectId, user, role, status, version, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        user: {$ref: "#/components/schemas/User"}
+        role: {$ref: "#/components/schemas/ProjectRole"}
+        status: {$ref: "#/components/schemas/MembershipStatus"}
+        version: {type: integer, format: int64, minimum: 1}
+        invitedBy: {type: string, format: uuid}
+        joinedAt: {type: string, format: date-time}
+        removedAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    MembershipPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Membership"}
+        nextCursor: {type: string}
+    CreateMembership:
+      type: object
+      required: [userId, role]
+      properties:
+        userId: {type: string, format: uuid}
+        role: {$ref: "#/components/schemas/ProjectRole"}
+        status: {$ref: "#/components/schemas/MembershipStatus", description: Only INVITED or ACTIVE is allowed when creating a membership.}
+    UpdateMembership:
+      type: object
+      minProperties: 1
+      properties:
+        role: {$ref: "#/components/schemas/ProjectRole"}
+        status: {$ref: "#/components/schemas/MembershipStatus"}
+    AssignmentOperation:
+      type: object
+      required: [id, projectId, taskId, userId, membershipId, operation, actorId, requestId, occurredAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        userId: {type: string, format: uuid}
+        membershipId: {type: string, format: uuid}
+        operation: {type: string, enum: [ASSIGNED, UNASSIGNED]}
+        actorId: {type: string, format: uuid}
+        requestId: {type: string, format: uuid}
+        occurredAt: {type: string, format: date-time}
+    AssignmentOperationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/AssignmentOperation"}
+        nextCursor: {type: string}
     Comment:
       type: object
       required: [id, projectId, taskId, author, body, version, createdAt]

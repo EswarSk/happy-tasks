@@ -26,8 +26,8 @@ const TaskRow = memo(function TaskRow({ task, members, selected, onOpen }: { tas
       type="button"
       onClick={onOpen}
       className={cn(
-        "task-grid h-[58px] w-full items-center border-b border-[var(--border-subtle)] px-4 text-left outline-none transition-colors hover:bg-[var(--hover)] focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)]",
-        selected && "bg-indigo-50/70",
+        "task-grid h-16 w-full items-center border-b border-[var(--border-subtle)] px-4 text-left outline-none transition-colors hover:bg-[var(--hover)] focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)] sm:px-5",
+        selected && "bg-[var(--panel)] hover:bg-[var(--panel)] shadow-[inset_3px_0_0_var(--brand)]",
       )}
     >
       <TaskStatusBadge status={task.status} />
@@ -68,7 +68,7 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
   );
   // TanStack Virtual intentionally returns imperative functions tied to scroll state.
   // eslint-disable-next-line react-hooks/incompatible-library
-  const virtualizer = useVirtualizer({ count: query.hasNextPage ? tasks.length + 1 : tasks.length, getScrollElement: () => parentRef.current, estimateSize: () => 58, overscan: 8 });
+  const virtualizer = useVirtualizer({ count: query.hasNextPage ? tasks.length + 1 : tasks.length, getScrollElement: () => parentRef.current, estimateSize: () => 64, overscan: 8 });
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.at(-1)?.index;
 
@@ -78,11 +78,11 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
   }, [lastIndex, tasks.length, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (query.isLoading) {
-    return <div className="space-y-px p-3">{Array.from({ length: 10 }).map((_, index) => <div key={index} className="h-[57px] animate-pulse rounded-md bg-slate-100" />)}</div>;
+    return <div className="space-y-2 p-3">{Array.from({ length: 10 }).map((_, index) => <div key={index} className="h-14 animate-pulse rounded-xl bg-[var(--skeleton)]" />)}</div>;
   }
 
   if (query.isError) {
-    return <div className="grid h-full place-items-center p-8 text-center"><div><AlertCircle className="mx-auto mb-3 size-6 text-rose-500" /><h2 className="font-semibold">Tasks could not be loaded</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">Check the data source and try again.</p><Button variant="secondary" className="mt-4" onClick={() => query.refetch()}><RefreshCw className="size-4" />Retry</Button></div></div>;
+    return <div className="grid h-full place-items-center p-8 text-center"><div><AlertCircle className="mx-auto mb-3 size-6 text-[var(--danger)]" /><h2 className="font-semibold">Tasks could not be loaded</h2><p className="mt-1 text-sm text-[var(--text-secondary)]">Check the data source and try again.</p><Button variant="secondary" className="mt-4" onClick={() => query.refetch()}><RefreshCw className="size-4" />Retry</Button></div></div>;
   }
 
   if (!tasks.length) {
@@ -91,7 +91,7 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="task-grid hidden h-9 shrink-0 items-center border-y border-[var(--border)] bg-[var(--surface-muted)] px-4 text-[10px] font-semibold tracking-[.06em] text-[var(--text-muted)] uppercase md:grid">
+      <div className="task-grid hidden h-11 shrink-0 items-center border-b border-[var(--border)] bg-[var(--panel)] px-5 text-[10px] font-semibold tracking-[.06em] text-[var(--text-muted)] uppercase md:grid">
         <span>Status</span><span>Task</span><span>Priority</span><span className="hidden lg:block">Assignee</span><span className="hidden xl:block">Signals</span><span className="hidden text-right lg:block">Updated</span>
       </div>
       <div ref={parentRef} className="min-h-0 flex-1 overflow-auto contain-strict" aria-label={`${totalCount.toLocaleString()} tasks`}>
@@ -99,7 +99,7 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
           {virtualItems.map((virtualRow) => {
             const task = tasks[virtualRow.index];
             if (!task) {
-              return <div key="loader" className="absolute left-0 grid h-[58px] w-full place-items-center text-xs text-[var(--text-muted)]" style={{ transform: `translateY(${virtualRow.start}px)` }}><RefreshCw className="mr-2 inline size-3 animate-spin" />Loading more tasks…</div>;
+              return <div key="loader" className="absolute left-0 grid h-16 w-full place-items-center text-xs text-[var(--text-muted)]" style={{ transform: `translateY(${virtualRow.start}px)` }}><RefreshCw className="mr-2 inline size-3 animate-spin" />Loading more tasks…</div>;
             }
             return <div className="absolute top-0 left-0 w-full" key={task.id} style={{ transform: `translateY(${virtualRow.start}px)` }}><TaskRow task={task} members={members} selected={task.id === selectedTaskId} onOpen={() => onOpenTask(task.id)} /></div>;
           })}

@@ -16,12 +16,24 @@ export function patchTaskInCache(queryClient: QueryClient, projectId: string, ta
 }
 
 export function prependTaskToCache(queryClient: QueryClient, projectId: string, task: Task) {
+  queryClient.setQueryData<Task>(["task", projectId, task.id], task);
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current || !current.pages[0]) return current;
-    const [first, ...rest] = current.pages;
+    const alreadyPresent = current.pages.some((page) => page.items.some((item) => item.id === task.id));
+    const pages = current.pages.map((page, index) => ({
+      ...page,
+      // A task.created SSE event can arrive before the mutation response. Keep
+      // this helper idempotent so the response never creates a second row.
+      items: alreadyPresent
+        ? page.items.map((item) => (item.id === task.id ? task : item))
+        : index === 0
+          ? [task, ...page.items]
+          : page.items,
+      totalCount: alreadyPresent || index !== 0 ? page.totalCount : page.totalCount + 1,
+    }));
     return {
       ...current,
-      pages: [{ ...first, items: [task, ...first.items], totalCount: first.totalCount + 1 }, ...rest],
+      pages,
     };
   });
 }

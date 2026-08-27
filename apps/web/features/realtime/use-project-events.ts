@@ -92,6 +92,14 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
     });
     if (!knownComment) incrementTaskCommentCount(queryClient, event.projectId, taskId);
   }
+  if (event.type === "membership.created" || event.type === "membership.updated") {
+    // Membership changes can remove assignments in one transaction. Refresh both
+    // the virtualized list and any open detail query so stale assignee chips do
+    // not survive a soft suspension/removal.
+    void queryClient.invalidateQueries({ queryKey: ["members", event.projectId] });
+    void queryClient.invalidateQueries({ queryKey: ["tasks", event.projectId] });
+    void queryClient.invalidateQueries({ queryKey: ["task", event.projectId] });
+  }
 }
 
 export function useProjectEvents(projectId: string, startCursor: number, enabled: boolean) {

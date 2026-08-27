@@ -22,3 +22,13 @@ func TestInvalidCursor(t *testing.T) {
 		t.Fatal("expected invalid cursor error")
 	}
 }
+
+func TestMemberCursorRoundTrip(t *testing.T) {
+	got, err := DecodeMemberCursor(EncodeMemberCursor("Maya Chen", "00000000-0000-7000-8000-000000000001"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayName != "Maya Chen" || got.ID != "00000000-0000-7000-8000-000000000001" {
+		t.Fatalf("unexpected cursor: %#v", got)
+	}
+}

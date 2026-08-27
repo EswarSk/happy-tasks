@@ -21,10 +21,10 @@ export const priorityLabels: Record<TaskPriority, string> = {
 };
 
 const statusStyles: Record<TaskStatus, string> = {
-  todo: "border-slate-200 bg-slate-50 text-slate-600",
-  in_progress: "border-indigo-200 bg-indigo-50 text-indigo-700",
-  blocked: "border-rose-200 bg-rose-50 text-rose-700",
-  done: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  todo: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)]",
+  in_progress: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)]",
+  blocked: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text)]",
+  done: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text)]",
 };
 
 export function StatusIcon({ status, className }: { status: TaskStatus; className?: string }) {
@@ -37,10 +37,10 @@ export function TaskStatusBadge({ status }: { status: TaskStatus }) {
 }
 
 const priorityStyles: Record<TaskPriority, string> = {
-  low: "border-slate-200 bg-white text-slate-500",
-  medium: "border-sky-200 bg-sky-50 text-sky-700",
-  high: "border-amber-200 bg-amber-50 text-amber-700",
-  urgent: "border-rose-200 bg-rose-50 text-rose-700",
+  low: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-muted)]",
+  medium: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)]",
+  high: "border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text)]",
+  urgent: "border-[var(--brand)] bg-[var(--brand)] text-[var(--primary-foreground)]",
 };
 
 export function PriorityBadge({ priority }: { priority: TaskPriority }) {

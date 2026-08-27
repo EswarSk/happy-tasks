@@ -25,14 +25,15 @@ import (
 const maxRequestBody = 1 << 20
 
 type Handler struct {
-	service        *app.Service
-	hub            *syncstream.Hub
-	defaultActorID string
-	logger         *slog.Logger
+	service            *app.Service
+	hub                *syncstream.Hub
+	defaultActorID     string
+	allowActorOverride bool
+	logger             *slog.Logger
 }
 
-func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowedOrigins []string, logger *slog.Logger) http.Handler {
-	h := &Handler{service: service, hub: hub, defaultActorID: defaultActorID, logger: logger}
+func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger) http.Handler {
+	h := &Handler{service: service, hub: hub, defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, logger: logger}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -56,6 +57,10 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 			r.Get("/", h.getProject)
 			r.Get("/bootstrap", h.bootstrap)
 			r.Get("/events", h.events)
+			r.Get("/members", h.listMembers)
+			r.Post("/members", h.createMembership)
+			r.Patch("/members/{membershipId}", h.updateMembership)
+			r.Delete("/members/{membershipId}", h.removeMembership)
 			r.Get("/tasks", h.listTasks)
 			r.Post("/tasks", h.createTask)
 			r.Route("/tasks/{taskId}", func(r chi.Router) {
@@ -66,6 +71,7 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 				r.Delete("/dependencies/{dependencyTaskId}", h.removeDependency)
 				r.Get("/comments", h.listComments)
 				r.Post("/comments", h.createComment)
+				r.Get("/assignment-history", h.listAssignmentHistory)
 			})
 		})
 	})
@@ -98,6 +104,17 @@ type updateTaskRequest struct {
 	CustomFields *map[string]any  `json:"customFields"`
 	AssigneeIDs  *[]string        `json:"assigneeIds"`
 	Tags         *[]string        `json:"tags"`
+}
+
+type createMembershipRequest struct {
+	UserID string                  `json:"userId"`
+	Role   domain.ProjectRole      `json:"role"`
+	Status domain.MembershipStatus `json:"status"`
+}
+
+type updateMembershipRequest struct {
+	Role   *domain.ProjectRole      `json:"role"`
+	Status *domain.MembershipStatus `json:"status"`
 }
 
 func (r updateTaskRequest) empty() bool {
@@ -172,7 +189,120 @@ func (h *Handler) createProject(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
+	w.Header().Set("ETag", etag(result.Value.Version))
 	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	filter := app.MemberFilter{Search: strings.TrimSpace(r.URL.Query().Get("q")), PageSize: intQuery(r, "limit", 50)}
+	if value := r.URL.Query().Get("status"); value != "" {
+		status := domain.MembershipStatus(value)
+		if !domain.ValidMembershipStatus(status) {
+			h.validationError(w, r, "status", "unknown membership status")
+			return
+		}
+		filter.Status = &status
+	}
+	if value := r.URL.Query().Get("role"); value != "" {
+		role := domain.ProjectRole(value)
+		if !domain.ValidProjectRole(role) {
+			h.validationError(w, r, "role", "unknown project role")
+			return
+		}
+		filter.Role = &role
+	}
+	if value := r.URL.Query().Get("cursor"); value != "" {
+		cursor, err := app.DecodeMemberCursor(value)
+		if err != nil {
+			h.validationError(w, r, "cursor", "invalid cursor")
+			return
+		}
+		filter.Cursor = cursor
+	}
+	page, err := h.service.ListMembers(r.Context(), h.actorID(r), projectID, filter)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) createMembership(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	var request createMembershipRequest
+	raw, ok := h.decode(w, r, &request)
+	if !ok {
+		return
+	}
+	if !validUUID(request.UserID) {
+		h.validationError(w, r, "userId", "must be a UUID")
+		return
+	}
+	result, err := h.service.CreateMembership(r.Context(), h.mutationMeta(r, raw), projectID, app.CreateMembershipInput{
+		UserID: request.UserID, Role: request.Role, Status: request.Status,
+	})
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", etag(result.Value.Version))
+	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) updateMembership(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	membershipID, ok := pathUUID(w, r, "membershipId")
+	if !ok {
+		return
+	}
+	version, ok := h.ifMatch(w, r)
+	if !ok {
+		return
+	}
+	var request updateMembershipRequest
+	raw, ok := h.decode(w, r, &request)
+	if !ok {
+		return
+	}
+	result, err := h.service.UpdateMembership(r.Context(), h.mutationMeta(r, raw), projectID, membershipID, app.UpdateMembershipInput{Role: request.Role, Status: request.Status, ExpectedVersion: version})
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", etag(result.Value.Version))
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) removeMembership(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	membershipID, ok := pathUUID(w, r, "membershipId")
+	if !ok {
+		return
+	}
+	version, ok := h.ifMatch(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.RemoveMembership(r.Context(), h.mutationMeta(r, nil), projectID, membershipID, version)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", etag(result.Value.Version))
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
 }
 
 func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +533,28 @@ func (h *Handler) createComment(w http.ResponseWriter, r *http.Request) {
 	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
 }
 
+func (h *Handler) listAssignmentHistory(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	filter := app.AssignmentFilter{PageSize: intQuery(r, "limit", 50)}
+	if value := r.URL.Query().Get("cursor"); value != "" {
+		cursor, err := app.DecodeAssignmentCursor(value)
+		if err != nil {
+			h.validationError(w, r, "cursor", "invalid cursor")
+			return
+		}
+		filter.Cursor = cursor
+	}
+	page, err := h.service.ListAssignmentHistory(r.Context(), h.actorID(r), projectID, taskID, filter)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathUUID(w, r, "projectId")
 	if !ok {
@@ -456,6 +608,11 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		case <-wakeup:
 		case <-poll.C:
 		case <-heartbeat.C:
+			// Membership is leased, not captured forever. Revocation closes the
+			// stream within one heartbeat even across API instances.
+			if _, err := h.service.StreamCursor(r.Context(), h.actorID(r), projectID); err != nil {
+				return
+			}
 			if _, err := io.WriteString(w, ": heartbeat\n\n"); err != nil {
 				return
 			}
@@ -515,7 +672,7 @@ func (h *Handler) mutationMeta(r *http.Request, raw []byte) app.MutationMeta {
 }
 
 func (h *Handler) actorID(r *http.Request) string {
-	if value := r.Header.Get("X-Actor-ID"); validUUID(value) {
+	if value := r.Header.Get("X-Actor-ID"); h.allowActorOverride && validUUID(value) {
 		return value
 	}
 	return h.defaultActorID
@@ -573,9 +730,9 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		switch code {
 		case "NOT_FOUND":
 			status = http.StatusNotFound
-		case "FORBIDDEN":
+		case "FORBIDDEN", "INSUFFICIENT_ROLE":
 			status = http.StatusForbidden
-		case "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "ALREADY_EXISTS":
+		case "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "ALREADY_EXISTS", "FINAL_ACTIVE_OWNER":
 			status = http.StatusConflict
 		case "PRECONDITION_REQUIRED":
 			status = http.StatusPreconditionRequired

@@ -1,6 +1,8 @@
 import type {
+  AssignmentHistoryItem,
   Comment,
   Member,
+  MemberFilters,
   Page,
   Project,
   Task,
@@ -27,7 +29,7 @@ const projects: Project[] = [
     description: "Ship a resilient collaborative workspace for high-velocity teams.",
     taskCount: 10_000,
     updatedAt: "2026-08-26T21:42:00Z",
-    accent: "#665cf6",
+    accent: "#18181b",
     version: 3,
   },
   {
@@ -36,7 +38,7 @@ const projects: Project[] = [
     description: "A faster, calmer mobile experience.",
     taskCount: 86,
     updatedAt: "2026-08-26T19:12:00Z",
-    accent: "#17a875",
+    accent: "#52525b",
     version: 1,
   },
   {
@@ -45,16 +47,16 @@ const projects: Project[] = [
     description: "Launch readiness across product and go-to-market.",
     taskCount: 142,
     updatedAt: "2026-08-25T15:05:00Z",
-    accent: "#e88d2d",
+    accent: "#a1a1aa",
     version: 2,
   },
 ];
 
 export const demoMembers: Member[] = [
-  { id: "00000000-0000-7000-8000-000000000001", displayName: "Avery Chen", email: "avery@example.com", color: "#5b5bd6" },
-  { id: "00000000-0000-7000-8000-000000000002", displayName: "Maya Patel", email: "maya@example.com", color: "#0f9f6e" },
-  { id: "00000000-0000-7000-8000-000000000003", displayName: "Noah Williams", email: "noah@example.com", color: "#d97706" },
-  { id: "00000000-0000-7000-8000-000000000004", displayName: "Sofia Brooks", email: "sofia@example.com", color: "#db2777" },
+  { id: "00000000-0000-7000-8000-000000000001", displayName: "Maya Chen", email: "maya@example.test", color: "#18181b" },
+  { id: "00000000-0000-7000-8000-000000000002", displayName: "Avery Chen", email: "avery@example.test", color: "#3f3f46" },
+  { id: "00000000-0000-7000-8000-000000000003", displayName: "Noah Williams", email: "noah@example.com", color: "#52525b" },
+  { id: "00000000-0000-7000-8000-000000000004", displayName: "Sofia Brooks", email: "sofia@example.com", color: "#71717a" },
 ];
 
 const titles = [
@@ -105,6 +107,7 @@ function makeTasks(project: Project): Task[] {
 interface MockStore {
   tasks: Map<string, Task[]>;
   comments: Map<string, Comment[]>;
+  assignmentHistory: Map<string, AssignmentHistoryItem[]>;
 }
 
 declare global {
@@ -113,8 +116,10 @@ declare global {
 
 function store(): MockStore {
   if (!globalThis.__happyTaskMockStore) {
-    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map() };
+    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), assignmentHistory: new Map() };
   }
+  // Preserve hot-reload compatibility with a store created before assignment history existed.
+  globalThis.__happyTaskMockStore.assignmentHistory ??= new Map();
   return globalThis.__happyTaskMockStore;
 }
 
@@ -139,6 +144,26 @@ function commentsFor(taskId: string) {
   return state.comments.get(taskId)!;
 }
 
+function assignmentHistoryFor(projectId: string, taskId: string) {
+  const state = store();
+  if (!state.assignmentHistory.has(taskId)) {
+    const task = tasksFor(projectId).find((item) => item.id === taskId);
+    const initial = (task?.assigneeIds ?? []).map((userId, index): AssignmentHistoryItem => ({
+      id: `${taskId}-assignment-${index}`,
+      projectId,
+      taskId,
+      userId,
+      membershipId: `membership-${userId}`,
+      operation: "ASSIGNED",
+      actorId: demoMembers[0].id,
+      requestId: `${taskId}-assignment-request-${index}`,
+      occurredAt: task?.updatedAt ?? new Date().toISOString(),
+    }));
+    state.assignmentHistory.set(taskId, initial);
+  }
+  return state.assignmentHistory.get(taskId)!;
+}
+
 const delay = (ms = 260) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function offsetFromCursor(cursor?: string) {
@@ -161,7 +186,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
       description,
       taskCount: 0,
       updatedAt: new Date().toISOString(),
-      accent: "#6258e8",
+      accent: "#18181b",
       version: 1,
     };
     projects.unshift(project);
@@ -173,6 +198,24 @@ export class MockWorkspaceApi implements WorkspaceApi {
     await delay(160);
     const project = projects.find((item) => item.id === projectId) ?? projects[0];
     return { project: structuredClone(project), members: structuredClone(demoMembers), streamCursor: 1842 };
+  }
+
+  async listMembers(_projectId: string, filters: MemberFilters = {}): Promise<Page<Member>> {
+    await delay(120);
+    const search = filters.search?.trim().toLowerCase();
+    const filtered = demoMembers.filter((member) => {
+      if (filters.status && filters.status !== (member.membershipStatus ?? "ACTIVE")) return false;
+      if (filters.role && filters.role !== (member.role ?? "MEMBER")) return false;
+      return !search || `${member.displayName} ${member.email}`.toLowerCase().includes(search);
+    });
+    const offset = offsetFromCursor(filters.cursor);
+    const limit = filters.limit ?? 50;
+    const items = filtered.slice(offset, offset + limit);
+    return {
+      items: structuredClone(items),
+      nextCursor: offset + limit < filtered.length ? `cursor_${offset + limit}` : null,
+      totalCount: filtered.length,
+    };
   }
 
   async listTasks(projectId: string, filters: TaskFilters): Promise<Page<Task>> {
@@ -233,7 +276,28 @@ export class MockWorkspaceApi implements WorkspaceApi {
     if (input.expectedVersion !== task.version) {
       throw new WorkspaceApiError(409, { code: "VERSION_CONFLICT", message: "This task changed while you were editing it.", details: { current: structuredClone(task) } });
     }
+    const previousAssigneeIds = new Set(task.assigneeIds);
+    const assignmentHistory = input.assigneeIds ? assignmentHistoryFor(projectId, taskId) : undefined;
     Object.assign(task, input, { version: task.version + 1, updatedAt: new Date().toISOString() });
+    if (input.assigneeIds) {
+      const nextAssigneeIds = new Set(input.assigneeIds);
+      const changes = [
+        ...input.assigneeIds.filter((userId) => !previousAssigneeIds.has(userId)).map((userId) => ({ userId, operation: "ASSIGNED" as const })),
+        ...[...previousAssigneeIds].filter((userId) => !nextAssigneeIds.has(userId)).map((userId) => ({ userId, operation: "UNASSIGNED" as const })),
+      ];
+      const occurredAt = new Date().toISOString();
+      assignmentHistory!.unshift(...changes.map(({ userId, operation }) => ({
+        id: crypto.randomUUID(),
+        projectId,
+        taskId,
+        userId,
+        membershipId: `membership-${userId}`,
+        operation,
+        actorId: demoMembers[0].id,
+        requestId: crypto.randomUUID(),
+        occurredAt,
+      })));
+    }
     return structuredClone(task);
   }
 
@@ -248,6 +312,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     }
     list.splice(index, 1);
     store().comments.delete(taskId);
+    store().assignmentHistory.delete(taskId);
     return { id: taskId, deleted: true as const, version: expectedVersion + 1 };
   }
 
@@ -294,5 +359,18 @@ export class MockWorkspaceApi implements WorkspaceApi {
     task.dependencyIds = task.dependencyIds.filter((id) => id !== dependencyTaskId);
     task.version += 1;
     return { taskId, dependsOnTaskId: dependencyTaskId, deleted: true };
+  }
+
+  async listAssignmentHistory(projectId: string, taskId: string, cursor?: string): Promise<Page<AssignmentHistoryItem>> {
+    await delay(160);
+    const items = assignmentHistoryFor(projectId, taskId);
+    const offset = cursor ? Number(cursor) : 0;
+    const pageSize = 50;
+    const page = items.slice(offset, offset + pageSize);
+    return {
+      items: structuredClone(page),
+      nextCursor: offset + pageSize < items.length ? String(offset + pageSize) : null,
+      totalCount: items.length,
+    };
   }
 }
