@@ -1,6 +1,6 @@
 "use client";
 
-import { Group, Panel, Separator } from "react-resizable-panels";
+import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Menu, Plus, Search, Sparkles, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -31,7 +31,10 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [createProjectId, setCreateProjectId] = useState(projectId);
   const [connection, setConnection] = useState<ConnectionState>("live");
+  const [expandedDetailTaskId, setExpandedDetailTaskId] = useState<string | null>(null);
+  const detailPanelRef = usePanelRef();
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
+  const showDebugMetadata = process.env.NEXT_PUBLIC_DEBUG_UI === "true";
   const bootstrap = useQuery({ queryKey: ["bootstrap", projectId], queryFn: () => workspaceApi.bootstrap(projectId) });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => workspaceApi.listProjects() });
   const realtimeState = useProjectEvents(projectId, bootstrap.data?.streamCursor ?? 0, dataSource === "api" && Boolean(bootstrap.data));
@@ -78,6 +81,13 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
     const params = searchParams.toString();
     router.push(`/projects/${projectId}${params ? `?${params}` : ""}`, { scroll: false });
   };
+  const toggleDetailPanel = () => {
+    if (!selectedTaskId) return;
+    const detailExpanded = expandedDetailTaskId === selectedTaskId;
+    const nextExpanded = !detailExpanded;
+    detailPanelRef.current?.resize(nextExpanded ? "62%" : "42%");
+    setExpandedDetailTaskId(nextExpanded ? selectedTaskId : null);
+  };
 
   const createTask = useMutation({
     mutationFn: () => workspaceApi.createTask(createProjectId, newTaskTitle.trim()),
@@ -93,7 +103,7 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
   });
 
   if (bootstrap.isLoading) {
-    return <div className="flex h-dvh gap-3 bg-[var(--background)] p-3"><div className="hidden w-[260px] animate-pulse rounded-[22px] border border-[var(--border)] bg-[var(--skeleton)] lg:block" /><main className="flex-1"><div className="h-[118px] animate-pulse rounded-[22px] bg-[var(--skeleton)]" /><div className="mt-3 h-[calc(100%-130px)] animate-pulse rounded-[22px] bg-[var(--skeleton)]" /></main></div>;
+    return <div className="flex h-dvh gap-3 bg-[var(--background)] p-3"><div className="hidden w-[260px] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--skeleton)] lg:block" /><main className="flex-1"><div className="h-[110px] animate-pulse rounded-xl bg-[var(--skeleton)]" /><div className="mt-3 h-[calc(100%-122px)] animate-pulse rounded-xl bg-[var(--skeleton)]" /></main></div>;
   }
   if (!bootstrap.data) {
     return <div className="grid h-dvh place-items-center bg-[var(--background)]"><div className="text-center"><h1 className="font-semibold">Project unavailable</h1><p className="mt-1 text-sm text-[var(--text-secondary)]">The workspace could not be bootstrapped.</p><Button variant="secondary" className="mt-4" onClick={() => bootstrap.refetch()}>Try again</Button></div></div>;
@@ -104,37 +114,38 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
   const selectedCreateProject = availableProjects.find((item) => item.id === createProjectId) ?? project;
   const currentActor = members.find((member) => member.id === demoActorId) ?? members.find((member) => member.role === "OWNER") ?? members[0];
   const taskList = <TaskList projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} />;
-  const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} onClose={closeTask} onOpenTask={openTask} /> : null;
+  const detailExpanded = Boolean(selectedTaskId && expandedDetailTaskId === selectedTaskId);
+  const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} onClose={closeTask} onOpenTask={openTask} onToggleExpand={toggleDetailPanel} detailExpanded={detailExpanded} /> : null;
 
   return (
     <div className="flex h-dvh overflow-hidden bg-[var(--background)] text-[var(--text)]">
-      <ProjectSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} currentActor={currentActor} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed((current) => !current)} />
+      <ProjectSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} currentActor={currentActor} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed((current) => !current)} onCreateTask={openCreateTask} />
       <main className="flex min-w-0 flex-1 flex-col gap-0 lg:gap-3 lg:p-3">
-        <header className="shrink-0 border-b border-[var(--border)] bg-[var(--panel)] shadow-sm shadow-[var(--shadow)] lg:rounded-[22px] lg:border">
-          <div className="flex min-h-[72px] items-center gap-3 px-4 lg:px-7">
+        <header className="shrink-0 border-b border-[var(--border)] bg-[var(--panel)] shadow-sm shadow-[var(--shadow)] lg:rounded-xl lg:border">
+          <div className="flex min-h-[64px] items-center gap-3 px-4 lg:px-6">
             <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open project navigation"><Menu className="size-5" /></Button>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2"><h1 className="truncate text-base font-semibold tracking-tight">{project.name}</h1><ConnectionStatus state={displayedConnection} /></div>
               <p className="hidden truncate text-xs text-[var(--text-muted)] sm:block">{project.description}</p>
             </div>
             <div className="hidden items-center gap-2 xl:flex">
-              <span className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-2 py-1 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{dataSource === "mock" ? "MOCK API" : "GO API"}</span>
+              {showDebugMetadata && <span className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-2 py-1 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{dataSource === "mock" ? "MOCK API" : "GO API"}</span>}
               {dataSource === "mock" && <Select label="Demo connection state" value={connection} onValueChange={(value) => setConnection(value as ConnectionState)} options={[{ value: "live", label: "Live" }, { value: "reconnecting", label: "Reconnecting" }, { value: "offline", label: "Offline" }]} className="min-w-32" />}
             </div>
             <ThemeToggle />
-            <Button onClick={openCreateTask}><Plus className="size-4" /><span className="hidden sm:inline">New task</span></Button>
+            <Button onClick={openCreateTask} aria-label="Create new task" title="Create new task"><Plus className="size-4" /><span className="hidden sm:inline">New task</span></Button>
           </div>
-          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-3 lg:px-7">
+          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-2.5 lg:px-6">
             <div className="relative min-w-[200px] flex-[1_1_240px] sm:max-w-sm"><Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-[var(--text-muted)]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" className="pl-10" /></div>
             <Select label="Filter by status" value={status} onValueChange={(value) => setFilter("status", value)} options={[{ value: "all", label: "All statuses" }, { value: "todo", label: "To do" }, { value: "in_progress", label: "In progress" }, { value: "blocked", label: "Blocked" }, { value: "done", label: "Done" }]} />
             <Select label="Filter by priority" value={priority} onValueChange={(value) => setFilter("priority", value)} options={[{ value: "all", label: "All priorities" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "urgent", label: "Urgent" }]} />
           </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-hidden bg-[var(--panel)] lg:rounded-[22px] lg:border lg:border-[var(--border)] lg:shadow-sm lg:shadow-[var(--shadow)]">
+        <div className="min-h-0 flex-1 overflow-hidden bg-[var(--panel)] lg:rounded-xl lg:border lg:border-[var(--border)] lg:shadow-sm lg:shadow-[var(--shadow)]">
           <div className="hidden h-full lg:block">
             <Group orientation="horizontal">
               <Panel id="tasks" minSize="38%" defaultSize={selectedTaskId ? "58%" : "100%"}>{taskList}</Panel>
-              {selectedTaskId && <><Separator className="group relative w-px bg-[var(--border)] outline-none after:absolute after:inset-y-0 after:-left-1 after:w-3 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]" /><Panel id="detail" minSize="34%" defaultSize="42%">{taskDetail}</Panel></>}
+              {selectedTaskId && <><Separator className="group relative w-px bg-[var(--border)] outline-none after:absolute after:inset-y-0 after:-left-1 after:w-3 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]" /><Panel id="detail" panelRef={detailPanelRef} minSize="34%" defaultSize="42%" onResize={(size) => setExpandedDetailTaskId(size.asPercentage >= 55 ? selectedTaskId : null)}>{taskDetail}</Panel></>}
             </Group>
           </div>
           <div className="h-full lg:hidden">{taskList}</div>

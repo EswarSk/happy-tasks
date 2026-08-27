@@ -2,7 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, MessageSquare, MoreHorizontal, Save, Trash2, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Save, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -25,9 +25,11 @@ interface TaskDetailPanelProps {
   members: Member[];
   onClose: () => void;
   onOpenTask: (taskId: string) => void;
+  onToggleExpand?: () => void;
+  detailExpanded?: boolean;
 }
 
-export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTask }: TaskDetailPanelProps) {
+export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTask, onToggleExpand, detailExpanded = false }: TaskDetailPanelProps) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState({ taskId: "", description: "", title: "" });
   const [conflictOpen, setConflictOpen] = useState(false);
@@ -106,6 +108,7 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
           <span className="font-mono text-[11px] font-semibold text-[var(--text-muted)]">{task.key}</span>
           <button className="text-[var(--text-muted)] hover:text-[var(--text)]" aria-label="Copy task key" onClick={() => { void navigator.clipboard?.writeText(task.key); toast.success("Task key copied"); }}><Copy className="size-3.5" /></button>
           <span className="ml-auto"><OptimisticStateIndicator state={task.syncState} /></span>
+          {onToggleExpand && <Button variant="ghost" size="icon" className="hidden lg:inline-flex" aria-label={detailExpanded ? "Restore split view" : "Expand task details"} title={detailExpanded ? "Restore split view" : "Expand task details"} onClick={onToggleExpand}>{detailExpanded ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}</Button>}
           <Button variant="ghost" size="icon" aria-label="More task actions" onClick={() => setDeleteOpen(true)}><MoreHorizontal className="size-4" /></Button>
           <Button variant="ghost" size="icon" aria-label="Close task details" onClick={onClose}><X className="size-4" /></Button>
         </div>
@@ -113,8 +116,8 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="space-y-4 px-4 py-4 sm:px-5 sm:py-5">
-          <section aria-labelledby="properties-heading" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4 sm:p-5">
+        <div className="space-y-0 px-4 py-4 sm:px-5 sm:py-5">
+          <section aria-labelledby="properties-heading" className="border-b border-[var(--border-subtle)] pb-5">
             <h2 id="properties-heading" className="section-label">Properties</h2>
             <div className="mt-3 grid grid-cols-[112px_minmax(0,1fr)] items-center gap-y-3 text-sm">
               <span className="text-[var(--text-muted)]">Status</span><TaskStatusSelect value={task.status} disabled={update.isPending} onChange={(status) => update.mutate({ status, expectedVersion: task.version })} />
@@ -133,18 +136,18 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
             </div>
           </section>
 
-          <section aria-labelledby="description-heading" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4 sm:p-5">
+          <section aria-labelledby="description-heading" className="border-b border-[var(--border-subtle)] py-5">
             <h2 id="description-heading" className="section-label">Description</h2>
             <Textarea value={description} onChange={(event) => setDraft({ taskId: task.id, title, description: event.target.value })} rows={5} className="mt-3" placeholder="Describe the outcome, context, and acceptance criteria…" />
             {(description !== task.description || title !== task.title) && <div className="mt-2 flex justify-end"><Button size="sm" onClick={saveTextFields} disabled={update.isPending}><Save className="size-3.5" />Save changes</Button></div>}
           </section>
 
-          <section aria-labelledby="dependencies-heading" className="rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] p-4 sm:p-5">
+          <section aria-labelledby="dependencies-heading" className="border-b border-[var(--border-subtle)] py-5">
             <div className="flex items-center justify-between"><h2 id="dependencies-heading" className="section-label">Dependencies</h2><Link2 className="size-4 text-[var(--text-muted)]" /></div>
             <div className="mt-3 space-y-2">
               {task.dependencyIds.map((id) => {
                 const linked = candidateQuery.data?.items.find((item) => item.id === id);
-                return <div key={id} className="flex w-full items-center gap-1 rounded-lg border border-[var(--border)] pr-1"><button onClick={() => onOpenTask(id)} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs hover:bg-[var(--hover)]"><Check className="size-3.5 text-[var(--success)]" /><span className="min-w-0 flex-1 truncate">{linked?.title ?? id.slice(0, 8)}</span><ChevronRight className="size-3.5 text-[var(--text-muted)]" /></button><Button variant="ghost" size="icon" className="size-7" aria-label={`Remove dependency ${linked?.title ?? id}`} disabled={removeDependency.isPending} onClick={() => removeDependency.mutate(id)}><X className="size-3.5" /></Button></div>;
+                return <div key={id} className="flex w-full items-center gap-1 rounded-md border border-[var(--border)] pr-1"><button onClick={() => onOpenTask(id)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-left text-xs outline-none hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)]"><Check className="size-3.5 text-[var(--success)]" /><span className="min-w-0 flex-1 truncate">{linked?.title ?? id.slice(0, 8)}</span><ChevronRight className="size-3.5 text-[var(--text-muted)]" /></button><Button variant="ghost" size="icon" className="size-7" aria-label={`Remove dependency ${linked?.title ?? id}`} disabled={removeDependency.isPending} onClick={() => removeDependency.mutate(id)}><X className="size-3.5" /></Button></div>;
               })}
               {!task.dependencyIds.length && <p className="text-xs text-[var(--text-muted)]">No dependencies yet.</p>}
               <Select label="Add dependency" value="add" onValueChange={(id) => { if (id !== "add") dependencyMutation.mutate(id); }} disabled={dependencyMutation.isPending} options={[{ value: "add", label: "+ Add dependency" }, ...dependencyCandidates.map((item) => ({ value: item.id, label: `${item.key} · ${item.title}` }))]} className="w-full" />
@@ -154,13 +157,16 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
           </section>
         </div>
 
-        <Tabs.Root defaultValue="comments" className="mx-4 mb-4 flex min-h-[390px] flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] sm:mx-5 sm:mb-5">
+        <Tabs.Root defaultValue="comments" className="mx-4 mb-4 flex min-h-[390px] flex-col overflow-hidden border-t border-[var(--border-subtle)] sm:mx-5 sm:mb-5">
           <Tabs.List className="flex h-12 shrink-0 gap-5 border-b border-[var(--border-subtle)] px-5" aria-label="Task collaboration">
             <Tabs.Trigger value="comments" className="border-b-2 border-transparent text-xs font-semibold text-[var(--text-muted)] outline-none data-[state=active]:border-[var(--brand)] data-[state=active]:text-[var(--text)]"><MessageSquare className="mr-1.5 inline size-3.5" />Comments <span className="ml-1 rounded-full border border-[var(--border)] bg-[var(--panel)] px-1.5">{task.commentCount}</span></Tabs.Trigger>
             <Tabs.Trigger value="activity" className="border-b-2 border-transparent text-xs font-semibold text-[var(--text-muted)] outline-none data-[state=active]:border-[var(--brand)] data-[state=active]:text-[var(--text)]"><Activity className="mr-1.5 inline size-3.5" />Activity</Tabs.Trigger>
           </Tabs.List>
           <Tabs.Content value="comments" className="flex min-h-[340px] flex-1 flex-col outline-none"><CommentThread projectId={projectId} taskId={taskId} members={members} /></Tabs.Content>
-          <Tabs.Content value="activity" className="outline-none"><AssignmentHistory projectId={projectId} taskId={taskId} members={members} /></Tabs.Content>
+          <Tabs.Content value="activity" className="outline-none">
+            <div className="px-5 pt-4 text-[11px] font-semibold tracking-[.07em] text-[var(--text-muted)] uppercase">Assignment history</div>
+            <AssignmentHistory projectId={projectId} taskId={taskId} members={members} />
+          </Tabs.Content>
         </Tabs.Root>
       </div>
 

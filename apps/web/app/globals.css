@@ -121,7 +121,8 @@ body {
 button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 
-.task-grid { display: grid; grid-template-columns: 112px minmax(220px, 1fr); gap: 12px; }
+.task-grid { grid-template-columns: 100px minmax(0, 1fr); gap: 8px; }
+@media (min-width: 640px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr); gap: 12px; } }
 @media (min-width: 768px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px; } }
 @media (min-width: 1024px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px; } }
 @media (min-width: 1280px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px 72px; } }

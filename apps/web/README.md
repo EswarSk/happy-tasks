@@ -19,6 +19,8 @@ Mock mode is the default:
 ```dotenv
 NEXT_PUBLIC_DATA_SOURCE=mock
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
+# Optional: show the MOCK API/GO API transport badge in the header.
+NEXT_PUBLIC_DEBUG_UI=false
 ```
 
 To connect the Go API, set `NEXT_PUBLIC_DATA_SOURCE=api`. The HTTP adapter maps UI-friendly lowercase status and priority values to the uppercase OpenAPI enums, sends the demo actor, idempotency, request ID, and version headers, and normalizes responses back into frontend domain models. Assignment search uses the paginated active-membership directory; task details show only current assignees and expose explicit remove controls, while Activity reads append-only assignment history.

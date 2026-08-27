@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, ChevronDown, ChevronsLeft, Plus, Search, Settings2 } from "lucide-react";
+import { Boxes, ChevronDown, ChevronsLeft, ListTodo, Plus, Search, Settings2, Star, UserRound } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -15,7 +15,7 @@ import type { Member, Project } from "@/lib/api";
 import { dataSource, workspaceApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-export function ProjectSidebar({ open, onClose, currentActor, collapsed = false, onToggleCollapse }: { open: boolean; onClose: () => void; currentActor?: Member; collapsed?: boolean; onToggleCollapse: () => void }) {
+export function ProjectSidebar({ open, onClose, currentActor, collapsed = false, onToggleCollapse, onCreateTask }: { open: boolean; onClose: () => void; currentActor?: Member; collapsed?: boolean; onToggleCollapse: () => void; onCreateTask?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -73,7 +73,7 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
   };
 
   const renderContent = (isCollapsed: boolean) => (
-    <aside className={cn("flex h-full flex-col overflow-hidden border border-[var(--border)] bg-[var(--sidebar)] shadow-sm shadow-[var(--shadow)] transition-[width] duration-200 lg:rounded-[22px]", isCollapsed ? "w-[80px]" : "w-[260px]")}>
+    <aside className={cn("flex h-full flex-col overflow-hidden border border-[var(--border)] bg-[var(--sidebar)] shadow-sm shadow-[var(--shadow)] transition-[width] duration-200 lg:rounded-xl", isCollapsed ? "w-[80px]" : "w-[260px]")}>
       <div className={cn("flex h-[72px] items-center border-b border-[var(--border-subtle)]", isCollapsed ? "gap-1 px-1" : "gap-3 px-5")}>
         <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--brand)] text-[var(--primary-foreground)] shadow-sm"><Boxes className="size-[18px]" /></div>
         {!isCollapsed && <div className="min-w-0 flex-1">
@@ -99,7 +99,7 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
                 onClick={onClose}
                 title={isCollapsed ? project.name : undefined}
                 aria-current={active ? "page" : undefined}
-                className={cn("group flex min-h-10 items-center rounded-full border border-transparent text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3", active ? cn("text-[var(--text)]", !isCollapsed && "lg:border-[var(--border)] lg:shadow-sm") : "text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]")}
+                className={cn("group flex min-h-9 items-center rounded-md border border-transparent text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3", active ? cn("text-[var(--text)]", !isCollapsed && "lg:border-[var(--border)] lg:bg-[var(--selected)]") : "text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]")}
               >
                 <span className={cn("size-2.5 rounded-full", active ? "bg-[var(--text)]" : "bg-[var(--text-muted)]")} />
                 {!isCollapsed && <span className="min-w-0 flex-1 truncate">{project.name}</span>}
@@ -109,12 +109,17 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
           })}
         </div>
         <div className="my-5 border-t border-[var(--border)]" />
-        <button className={cn("flex min-h-10 w-full items-center rounded-full text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openGlobalSearch} title={isCollapsed ? "Search all tasks" : undefined} aria-label="Search all tasks"><Search className="size-4" />{!isCollapsed && "Search all tasks"}</button>
-        <button className={cn("mt-1 flex min-h-10 w-full items-center rounded-full text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openWorkspaceSettings} title={isCollapsed ? "Workspace settings" : undefined} aria-label="Workspace settings"><Settings2 className="size-4" />{!isCollapsed && "Workspace settings"}</button>
+        {!isCollapsed && <div className="mb-2 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Workspace</div>}
+        <button type="button" className={cn("flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openGlobalSearch} title={isCollapsed ? "Search all tasks" : undefined} aria-label="Search all tasks"><Search className="size-4" />{!isCollapsed && "Search all tasks"}</button>
+        <button type="button" className={cn("mt-1 flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openWorkspaceSettings} title={isCollapsed ? "Workspace settings" : undefined} aria-label="Workspace settings"><Settings2 className="size-4" />{!isCollapsed && "Workspace settings"}</button>
+        {!isCollapsed && <div className="mb-2 mt-5 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Views</div>}
+        <button type="button" disabled title="All tasks view — coming soon" aria-label="All tasks view — coming soon" className={cn("flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><ListTodo className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">All tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
+        <button type="button" disabled title="My tasks view — coming soon" aria-label="My tasks view — coming soon" className={cn("mt-1 flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><UserRound className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">My tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
+        <button type="button" disabled title="Favorites view — coming soon" aria-label="Favorites view — coming soon" className={cn("mt-1 flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><Star className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">Favorites</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
       </nav>
 
       <div className="border-t border-[var(--border)] p-3">
-        <button className={cn("flex min-h-11 w-full items-center rounded-full text-left hover:bg-[var(--hover)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} title={isCollapsed ? currentActor?.displayName ?? "Demo user" : undefined}>
+        <button type="button" className={cn("flex min-h-11 w-full items-center rounded-md text-left outline-none hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} title={isCollapsed ? currentActor?.displayName ?? "Demo user" : undefined}>
           <Avatar name={currentActor?.displayName ?? "Maya Chen"} color={currentActor?.color} />
           {!isCollapsed && <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{currentActor?.displayName ?? "Maya Chen"}</span><span className="block text-[11px] text-[var(--text-muted)]">Demo user</span></span>}
           {!isCollapsed && <ChevronDown className="size-3.5 text-[var(--text-muted)]" />}
@@ -134,8 +139,13 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
           <div className="flex justify-end gap-2"><Button variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button><Button disabled={!name.trim() || createProject.isPending} onClick={() => createProject.mutate()}>{createProject.isPending ? "Creating…" : "Create project"}</Button></div>
         </div>
       </Dialog>
-      <Dialog open={searchOpen} onOpenChange={(nextOpen) => { setSearchOpen(nextOpen); if (!nextOpen) setGlobalSearch(""); }} title="Search all tasks" description="Search across every project in this workspace.">
-        <Input value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} autoFocus placeholder="Search by task title or key…" aria-label="Search all tasks" />
+      <Dialog open={searchOpen} onOpenChange={(nextOpen) => { setSearchOpen(nextOpen); if (!nextOpen) setGlobalSearch(""); }} title="Quick find" description="Search tasks or choose a workspace action.">
+        <Input value={globalSearch} onChange={(event) => setGlobalSearch(event.target.value)} autoFocus placeholder="Search tasks or commands…" aria-label="Search tasks or commands" />
+        {!globalSearchTerm && <div className="mb-3 space-y-1 rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1.5">
+          {onCreateTask && <button type="button" onClick={() => { setSearchOpen(false); setGlobalSearch(""); onClose(); onCreateTask(); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><Plus className="size-4 text-[var(--text-muted)]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-[var(--text)]">Create a task</span><span className="block text-xs text-[var(--text-muted)]">Add a task to the current project</span></span></button>}
+          <button type="button" onClick={() => { setSearchOpen(false); setGlobalSearch(""); setCreateOpen(true); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><Plus className="size-4 text-[var(--text-muted)]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-[var(--text)]">Create a project</span><span className="block text-xs text-[var(--text-muted)]">Start a new project workspace</span></span></button>
+          <button type="button" onClick={() => { setSearchOpen(false); setGlobalSearch(""); setSettingsOpen(true); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><Settings2 className="size-4 text-[var(--text-muted)]" /><span className="min-w-0 flex-1"><span className="block text-sm font-medium text-[var(--text)]">Workspace settings</span><span className="block text-xs text-[var(--text-muted)]">Appearance and data source</span></span></button>
+        </div>}
         <div className="mt-4 max-h-72 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1.5" aria-live="polite">
           {!globalSearchTerm && <p className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">Start typing to search tasks.</p>}
           {globalSearchTerm.length === 1 && <p className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">Type at least two characters.</p>}
