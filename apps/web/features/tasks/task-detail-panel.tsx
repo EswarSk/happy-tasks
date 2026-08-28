@@ -16,6 +16,7 @@ import { CommentThread } from "@/features/comments/comment-thread";
 import { AssigneePicker } from "./assignee-picker";
 import { AssignmentHistory } from "./assignment-history";
 import { CollaborativeDescription } from "./collaborative-description";
+import { TaskDependencyGraph } from "./task-dependency-graph";
 import { patchTaskInCache, removeTaskFromCache } from "./query-cache";
 import type { Member, Task, UpdateTaskInput } from "@/lib/api";
 import { WorkspaceApiError, dataSource, workspaceApi } from "@/lib/api";
@@ -63,7 +64,7 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
 
   const candidateQuery = useQuery({
     queryKey: ["dependency-candidates", projectId, taskId],
-    queryFn: () => workspaceApi.listTasks(projectId, { limit: 20 }),
+    queryFn: () => workspaceApi.listTasks(projectId, { limit: 100 }),
     enabled: Boolean(task),
   });
 
@@ -146,6 +147,8 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="space-y-0 px-4 py-4 sm:px-5 sm:py-5">
+          <TaskDependencyGraph task={task} relatedTasks={candidateQuery.data?.items ?? []} isLoading={candidateQuery.isLoading} onOpenTask={onOpenTask} />
+
           <section aria-labelledby="properties-heading" className="border-b border-[var(--border-subtle)] pb-5">
             <h2 id="properties-heading" className="section-label">Properties</h2>
             <div className="mt-3 grid grid-cols-[112px_minmax(0,1fr)] items-center gap-y-3 text-sm">

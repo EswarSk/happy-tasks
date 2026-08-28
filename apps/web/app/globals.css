@@ -127,6 +127,15 @@ button { cursor: pointer; }
 @media (min-width: 1024px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px; } }
 @media (min-width: 1280px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px 72px; } }
 
+.dependency-map-grid { grid-template-columns: minmax(0, 1fr); }
+.dependency-map-connector { min-height: 22px; flex-direction: column; }
+.dependency-map-connector-line { width: 1px; min-height: 10px; flex: 1; }
+@container (min-width: 680px) {
+  .dependency-map-grid { grid-template-columns: minmax(0, 1fr) 28px minmax(220px, 1.25fr) 28px minmax(0, 1fr); }
+  .dependency-map-connector { min-height: 0; flex-direction: row; }
+  .dependency-map-connector-line { width: auto; min-height: 0; height: 1px; }
+}
+
 .section-label { font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted); }
 .contain-strict { contain: strict; }
 
