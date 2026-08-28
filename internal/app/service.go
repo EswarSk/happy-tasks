@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/eswaravegi/happy-task-management/internal/domain"
+	"github.com/google/uuid"
 )
 
 type Service struct {
@@ -174,6 +176,72 @@ func (s *Service) GetTask(ctx context.Context, actorID, projectID, taskID string
 	return s.db.GetTask(ctx, projectID, taskID)
 }
 
+func (s *Service) GetTaskDescriptionDocument(ctx context.Context, actorID, projectID, taskID string) (domain.TaskDescriptionDocument, error) {
+	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
+		return domain.TaskDescriptionDocument{}, err
+	}
+	document, err := s.db.GetTaskDescriptionDocument(ctx, projectID, taskID)
+	if err != nil {
+		return domain.TaskDescriptionDocument{}, err
+	}
+	if document.ProjectID == "" {
+		if err := s.db.WithinTx(ctx, func(store Store) error {
+			return store.EnsureTaskDescriptionDocument(ctx, projectID, taskID)
+		}); err != nil {
+			return domain.TaskDescriptionDocument{}, err
+		}
+		document.ProjectID, document.TaskID = projectID, taskID
+	}
+	return document, nil
+}
+
+// PersistTaskDescriptionUpdate stores one opaque Yjs update and a searchable
+// plain-text projection. The projection deliberately does not increment the
+// task metadata version: description edits are merged by the CRDT channel,
+// while status, priority, assignment and tags retain field-level undo/redo.
+func (s *Service) PersistTaskDescriptionUpdate(ctx context.Context, meta MutationMeta, projectID, taskID, text string, update []byte, initialize bool) (Mutation[domain.Task], error) {
+	if len(update) == 0 || len(update) > 2<<20 {
+		return Mutation[domain.Task]{}, domain.Validation("DESCRIPTION_UPDATE_TOO_LARGE", "The collaborative description update must be between 1 byte and 2 MB.", nil)
+	}
+	if len(text) > 48<<10 {
+		return Mutation[domain.Task]{}, domain.Validation("DESCRIPTION_TOO_LARGE", "The task description must not exceed 48 KB.", nil)
+	}
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Task], error) {
+		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		if _, err := store.GetTaskForUpdate(ctx, projectID, taskID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		if err := store.EnsureTaskDescriptionDocument(ctx, projectID, taskID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		if initialize {
+			initialized, err := store.InitializeTaskDescriptionDocument(ctx, projectID, taskID, update)
+			if err != nil {
+				return mutationValue[domain.Task]{}, err
+			}
+			if !initialized {
+				return mutationValue[domain.Task]{}, domain.Validation("DESCRIPTION_ALREADY_INITIALIZED", "Another collaborator initialized this description. Reconnect to the shared snapshot.", nil)
+			}
+		} else if err := store.AppendTaskDescriptionUpdate(ctx, projectID, taskID, meta.ActorID, update); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		if err := store.UpdateTaskDescriptionProjection(ctx, projectID, taskID, text); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		task, err := store.GetTask(ctx, projectID, taskID)
+		if err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		return mutationValue[domain.Task]{
+			value:  task,
+			status: http.StatusOK,
+			event:  EventDraft{ProjectID: projectID, Type: "task.description.updated", AggregateType: "task", AggregateID: taskID, AggregateVersion: &task.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: map[string]any{"task": task, "descriptionUpdate": true}},
+		}, nil
+	})
+}
+
 func (s *Service) CreateTask(ctx context.Context, meta MutationMeta, projectID string, input CreateTaskInput) (Mutation[domain.Task], error) {
 	if input.Status == "" {
 		input.Status = domain.StatusTodo
@@ -221,35 +289,30 @@ func (s *Service) UpdateTask(ctx context.Context, meta MutationMeta, projectID, 
 		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		current, err := store.GetTask(ctx, projectID, taskID)
+		current, err := store.GetTaskForUpdate(ctx, projectID, taskID)
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		if current.Version != expectedVersion {
+		fields := changedTaskFields(input)
+		if len(fields) == 0 {
+			return mutationValue[domain.Task]{}, domain.Validation("VALIDATION_ERROR", "At least one task field is required.", nil)
+		}
+		if expectedVersion > current.Version {
 			return mutationValue[domain.Task]{}, versionConflict(current)
 		}
+		if expectedVersion < current.Version {
+			operations, listErr := store.ListTaskOperationsAfter(ctx, projectID, taskID, expectedVersion)
+			if listErr != nil {
+				return mutationValue[domain.Task]{}, listErr
+			}
+			for _, operation := range operations {
+				if fieldsOverlap(fields, operation.ChangedFields) {
+					return mutationValue[domain.Task]{}, versionConflict(current)
+				}
+			}
+		}
 		next := current
-		if input.Title != nil {
-			next.Title = *input.Title
-		}
-		if input.Description != nil {
-			next.Description = *input.Description
-		}
-		if input.Status != nil {
-			next.Status = *input.Status
-		}
-		if input.Priority != nil {
-			next.Priority = *input.Priority
-		}
-		if input.CustomFields != nil {
-			next.CustomFields = *input.CustomFields
-		}
-		if input.AssigneeIDs != nil {
-			next.AssigneeIDs = *input.AssigneeIDs
-		}
-		if input.Tags != nil {
-			next.Tags = *input.Tags
-		}
+		applyTaskInput(&next, input)
 		if err := domain.ValidateTask(next.Title, next.Description, next.Status, next.Priority, next.Tags); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
@@ -261,25 +324,262 @@ func (s *Service) UpdateTask(ctx context.Context, meta MutationMeta, projectID, 
 		if err := requireMembers(ctx, store, projectID, next.AssigneeIDs); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		updated, err := store.UpdateTask(ctx, projectID, taskID, expectedVersion, input)
+		updated, err := applyTaskUpdate(ctx, store, projectID, taskID, current.Version, input, meta)
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		if input.AssigneeIDs != nil {
-			if _, err := store.ReplaceTaskAssignees(ctx, projectID, taskID, *input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
-				return mutationValue[domain.Task]{}, err
-			}
-			updated, err = store.GetTask(ctx, projectID, taskID)
-			if err != nil {
-				return mutationValue[domain.Task]{}, err
-			}
+		if err := store.InvalidateRedoOperations(ctx, projectID, taskID, meta.ActorID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		operation := newTaskOperation(projectID, taskID, meta, expectedVersion, current, updated, fields)
+		if err := store.CreateTaskOperation(ctx, operation); err != nil {
+			return mutationValue[domain.Task]{}, err
 		}
 		return mutationValue[domain.Task]{
 			value:  updated,
 			status: http.StatusOK,
-			event:  EventDraft{ProjectID: projectID, Type: "task.updated", AggregateType: "task", AggregateID: taskID, AggregateVersion: &updated.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: updated},
+			event:  EventDraft{ProjectID: projectID, Type: "task.updated", AggregateType: "task", AggregateID: taskID, AggregateVersion: &updated.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: map[string]any{"task": updated, "operationId": operation.ID, "changedFields": fields}},
 		}, nil
 	})
+}
+
+// UndoTask and RedoTask are intentionally server-authoritative. They only
+// reverse the caller's latest operation when no collaborator has changed one
+// of those same fields since it was recorded; unrelated fields are preserved.
+func (s *Service) UndoTask(ctx context.Context, meta MutationMeta, projectID, taskID string) (Mutation[domain.Task], error) {
+	return s.replayTaskOperation(ctx, meta, projectID, taskID, "ACTIVE", "UNDONE", "undo")
+}
+
+func (s *Service) RedoTask(ctx context.Context, meta MutationMeta, projectID, taskID string) (Mutation[domain.Task], error) {
+	return s.replayTaskOperation(ctx, meta, projectID, taskID, "UNDONE", "ACTIVE", "redo")
+}
+
+func (s *Service) replayTaskOperation(ctx context.Context, meta MutationMeta, projectID, taskID, fromState, toState, action string) (Mutation[domain.Task], error) {
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Task], error) {
+		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		current, err := store.GetTaskForUpdate(ctx, projectID, taskID)
+		if err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		operation, err := store.GetLatestTaskOperation(ctx, projectID, taskID, meta.ActorID, fromState)
+		if err != nil {
+			if err == domain.ErrNotFound {
+				code := "UNDO_NOT_AVAILABLE"
+				message := "There is no task edit available to undo."
+				if action == "redo" {
+					code, message = "REDO_NOT_AVAILABLE", "There is no task edit available to redo."
+				}
+				return mutationValue[domain.Task]{}, domain.Validation(code, message, nil)
+			}
+			return mutationValue[domain.Task]{}, err
+		}
+		expected := operation.AfterState
+		if action == "redo" {
+			expected = operation.BeforeState
+		}
+		if !taskStateMatches(current, expected, operation.ChangedFields) {
+			return mutationValue[domain.Task]{}, domain.Validation("OPERATION_CONFLICT", "This edit cannot be replayed because another collaborator changed one of the same fields.", map[string]any{"current": current, "operationId": operation.ID})
+		}
+		target := operation.BeforeState
+		if action == "redo" {
+			target = operation.AfterState
+		}
+		input, err := taskInputFromState(target, operation.ChangedFields)
+		if err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		updated, err := applyTaskUpdate(ctx, store, projectID, taskID, current.Version, input, meta)
+		if err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		if err := store.SetTaskOperationState(ctx, operation.ID, toState, updated.Version); err != nil {
+			return mutationValue[domain.Task]{}, err
+		}
+		return mutationValue[domain.Task]{
+			value:  updated,
+			status: http.StatusOK,
+			event:  EventDraft{ProjectID: projectID, Type: "task.updated", AggregateType: "task", AggregateID: taskID, AggregateVersion: &updated.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: map[string]any{"task": updated, "operationId": operation.ID, "changedFields": operation.ChangedFields, "action": action}},
+		}, nil
+	})
+}
+
+func applyTaskUpdate(ctx context.Context, store Store, projectID, taskID string, expectedVersion int64, input UpdateTaskInput, meta MutationMeta) (domain.Task, error) {
+	updated, err := store.UpdateTask(ctx, projectID, taskID, expectedVersion, input)
+	if err != nil {
+		return domain.Task{}, err
+	}
+	if input.AssigneeIDs != nil {
+		if _, err := store.ReplaceTaskAssignees(ctx, projectID, taskID, *input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
+			return domain.Task{}, err
+		}
+		updated, err = store.GetTask(ctx, projectID, taskID)
+	}
+	return updated, err
+}
+
+func changedTaskFields(input UpdateTaskInput) []string {
+	fields := make([]string, 0, 7)
+	if input.Title != nil {
+		fields = append(fields, "title")
+	}
+	if input.Description != nil {
+		fields = append(fields, "description")
+	}
+	if input.Status != nil {
+		fields = append(fields, "status")
+	}
+	if input.Priority != nil {
+		fields = append(fields, "priority")
+	}
+	if input.CustomFields != nil {
+		fields = append(fields, "customFields")
+	}
+	if input.AssigneeIDs != nil {
+		fields = append(fields, "assigneeIds")
+	}
+	if input.Tags != nil {
+		fields = append(fields, "tags")
+	}
+	return fields
+}
+
+func fieldsOverlap(left, right []string) bool {
+	seen := make(map[string]struct{}, len(left))
+	for _, field := range left {
+		seen[field] = struct{}{}
+	}
+	for _, field := range right {
+		if _, ok := seen[field]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func applyTaskInput(task *domain.Task, input UpdateTaskInput) {
+	if input.Title != nil {
+		task.Title = *input.Title
+	}
+	if input.Description != nil {
+		task.Description = *input.Description
+	}
+	if input.Status != nil {
+		task.Status = *input.Status
+	}
+	if input.Priority != nil {
+		task.Priority = *input.Priority
+	}
+	if input.CustomFields != nil {
+		task.CustomFields = *input.CustomFields
+	}
+	if input.AssigneeIDs != nil {
+		task.AssigneeIDs = append([]string(nil), (*input.AssigneeIDs)...)
+		sort.Strings(task.AssigneeIDs)
+	}
+	if input.Tags != nil {
+		task.Tags = append([]string(nil), (*input.Tags)...)
+		sort.Strings(task.Tags)
+	}
+}
+
+func taskState(task domain.Task, fields []string) map[string]any {
+	state := make(map[string]any, len(fields))
+	for _, field := range fields {
+		switch field {
+		case "title":
+			state[field] = task.Title
+		case "description":
+			state[field] = task.Description
+		case "status":
+			state[field] = string(task.Status)
+		case "priority":
+			state[field] = string(task.Priority)
+		case "customFields":
+			state[field] = task.CustomFields
+		case "assigneeIds":
+			values := append([]string(nil), task.AssigneeIDs...)
+			sort.Strings(values)
+			state[field] = values
+		case "tags":
+			values := append([]string(nil), task.Tags...)
+			sort.Strings(values)
+			state[field] = values
+		}
+	}
+	return state
+}
+
+func newTaskOperation(projectID, taskID string, meta MutationMeta, baseVersion int64, before, after domain.Task, fields []string) domain.TaskOperation {
+	return domain.TaskOperation{ID: uuid.Must(uuid.NewV7()).String(), ProjectID: projectID, TaskID: taskID, ActorID: meta.ActorID, RequestID: meta.RequestID, OperationType: "UPDATE", ChangedFields: fields, BeforeState: taskState(before, fields), AfterState: taskState(after, fields), BaseVersion: baseVersion, ResultingVersion: after.Version, LastActionVersion: after.Version, State: "ACTIVE"}
+}
+
+func taskStateMatches(task domain.Task, expected map[string]any, fields []string) bool {
+	actual := taskState(task, fields)
+	for _, field := range fields {
+		left, _ := json.Marshal(actual[field])
+		right, _ := json.Marshal(expected[field])
+		if !bytes.Equal(left, right) {
+			return false
+		}
+	}
+	return true
+}
+
+func taskInputFromState(state map[string]any, fields []string) (UpdateTaskInput, error) {
+	var input UpdateTaskInput
+	for _, field := range fields {
+		raw, err := json.Marshal(state[field])
+		if err != nil {
+			return input, err
+		}
+		switch field {
+		case "title":
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.Title = &value
+		case "description":
+			var value string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.Description = &value
+		case "status":
+			var value domain.Status
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.Status = &value
+		case "priority":
+			var value domain.Priority
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.Priority = &value
+		case "customFields":
+			var value map[string]any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.CustomFields = &value
+		case "assigneeIds":
+			var value []string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.AssigneeIDs = &value
+		case "tags":
+			var value []string
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return input, err
+			}
+			input.Tags = &value
+		}
+	}
+	return input, nil
 }
 
 func (s *Service) DeleteTask(ctx context.Context, meta MutationMeta, projectID, taskID string, expectedVersion int64) (Mutation[map[string]any], error) {

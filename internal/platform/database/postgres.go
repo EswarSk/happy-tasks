@@ -301,6 +301,40 @@ func (p *Postgres) ListAssignmentOperations(ctx context.Context, projectID, task
 	return items, rows.Err()
 }
 
+func (p *Postgres) GetTaskDescriptionDocument(ctx context.Context, projectID, taskID string) (domain.TaskDescriptionDocument, error) {
+	var document domain.TaskDescriptionDocument
+	var snapshot []byte
+	err := p.pool.QueryRow(ctx, `
+		SELECT initialized, snapshot
+		FROM task_description_documents
+		WHERE project_id = $1 AND task_id = $2`, projectID, taskID).Scan(&document.Initialized, &snapshot)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return document, nil
+	}
+	if err != nil {
+		return document, err
+	}
+	document.ProjectID, document.TaskID = projectID, taskID
+	document.Snapshot = snapshot
+	rows, err := p.pool.Query(ctx, `
+		SELECT update_data
+		FROM task_description_updates
+		WHERE project_id = $1 AND task_id = $2
+		ORDER BY id`, projectID, taskID)
+	if err != nil {
+		return document, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var update []byte
+		if err := rows.Scan(&update); err != nil {
+			return document, err
+		}
+		document.Updates = append(document.Updates, update)
+	}
+	return document, rows.Err()
+}
+
 func (p *Postgres) ListEvents(ctx context.Context, projectID string, after int64, limit int) ([]domain.Event, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT project_id, sequence, event_type, aggregate_type, aggregate_id,
@@ -559,6 +593,126 @@ func (s *store) CreateTask(ctx context.Context, projectID string, input app.Crea
 
 func (s *store) GetTask(ctx context.Context, projectID, taskID string) (domain.Task, error) {
 	return getTask(ctx, s.q, projectID, taskID)
+}
+
+func (s *store) GetTaskForUpdate(ctx context.Context, projectID, taskID string) (domain.Task, error) {
+	return getTaskForUpdate(ctx, s.q, projectID, taskID)
+}
+
+func (s *store) EnsureTaskDescriptionDocument(ctx context.Context, projectID, taskID string) error {
+	_, err := s.q.Exec(ctx, `
+		INSERT INTO task_description_documents(project_id, task_id)
+		VALUES ($1, $2)
+		ON CONFLICT (project_id, task_id) DO NOTHING`, projectID, taskID)
+	return err
+}
+
+func (s *store) InitializeTaskDescriptionDocument(ctx context.Context, projectID, taskID string, snapshot []byte) (bool, error) {
+	command, err := s.q.Exec(ctx, `
+		UPDATE task_description_documents
+		SET initialized = true, snapshot = $3, updated_at = now()
+		WHERE project_id = $1 AND task_id = $2 AND initialized = false`, projectID, taskID, snapshot)
+	return command.RowsAffected() == 1, err
+}
+
+func (s *store) AppendTaskDescriptionUpdate(ctx context.Context, projectID, taskID, actorID string, update []byte) error {
+	_, err := s.q.Exec(ctx, `
+		INSERT INTO task_description_updates(project_id, task_id, actor_id, update_data)
+		VALUES ($1, $2, $3, $4)`, projectID, taskID, actorID, update)
+	return err
+}
+
+func (s *store) UpdateTaskDescriptionProjection(ctx context.Context, projectID, taskID, description string) error {
+	_, err := s.q.Exec(ctx, `
+		UPDATE tasks SET description = $3, updated_at = now()
+		WHERE project_id = $1 AND id = $2`, projectID, taskID, description)
+	return err
+}
+
+func (s *store) ListTaskOperationsAfter(ctx context.Context, projectID, taskID string, version int64) ([]domain.TaskOperation, error) {
+	rows, err := s.q.Query(ctx, `
+		SELECT id, project_id, task_id, actor_id, request_id, operation_type,
+		       changed_fields, before_state, after_state, base_version,
+		       resulting_version, last_action_version, state, created_at, acted_at
+		FROM task_operations
+		WHERE project_id = $1 AND task_id = $2 AND last_action_version > $3
+		ORDER BY last_action_version, created_at, id`, projectID, taskID, version)
+	if err != nil {
+		return nil, fmt.Errorf("list task operations: %w", err)
+	}
+	defer rows.Close()
+	operations := make([]domain.TaskOperation, 0)
+	for rows.Next() {
+		operation, scanErr := scanTaskOperation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		operations = append(operations, operation)
+	}
+	return operations, rows.Err()
+}
+
+func (s *store) GetLatestTaskOperation(ctx context.Context, projectID, taskID, actorID, state string) (domain.TaskOperation, error) {
+	operation, err := scanTaskOperation(s.q.QueryRow(ctx, `
+		SELECT id, project_id, task_id, actor_id, request_id, operation_type,
+		       changed_fields, before_state, after_state, base_version,
+		       resulting_version, last_action_version, state, created_at, acted_at
+		FROM task_operations
+		WHERE project_id = $1 AND task_id = $2 AND actor_id = $3 AND state = $4
+		ORDER BY
+		  CASE WHEN state = 'UNDONE' THEN acted_at END DESC NULLS LAST,
+		  CASE WHEN state = 'ACTIVE' THEN resulting_version END DESC NULLS LAST,
+		  created_at DESC, id DESC
+		LIMIT 1`, projectID, taskID, actorID, state))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.TaskOperation{}, domain.ErrNotFound
+	}
+	return operation, err
+}
+
+func (s *store) CreateTaskOperation(ctx context.Context, operation domain.TaskOperation) error {
+	before, err := json.Marshal(operation.BeforeState)
+	if err != nil {
+		return fmt.Errorf("encode task operation before state: %w", err)
+	}
+	after, err := json.Marshal(operation.AfterState)
+	if err != nil {
+		return fmt.Errorf("encode task operation after state: %w", err)
+	}
+	_, err = s.q.Exec(ctx, `
+		INSERT INTO task_operations(
+		  id, project_id, task_id, actor_id, request_id, operation_type,
+		  changed_fields, before_state, after_state, base_version,
+		  resulting_version, last_action_version, state, acted_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		operation.ID, operation.ProjectID, operation.TaskID, operation.ActorID,
+		operation.RequestID, operation.OperationType, operation.ChangedFields,
+		before, after, operation.BaseVersion, operation.ResultingVersion,
+		operation.LastActionVersion, operation.State, operation.ActedAt)
+	return mapConstraintError(err)
+}
+
+func (s *store) SetTaskOperationState(ctx context.Context, operationID, state string, actionVersion int64) error {
+	command, err := s.q.Exec(ctx, `
+		UPDATE task_operations
+		SET state = $2, last_action_version = $3, acted_at = now()
+		WHERE id = $1`, operationID, state, actionVersion)
+	if err != nil {
+		return mapConstraintError(err)
+	}
+	if command.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+func (s *store) InvalidateRedoOperations(ctx context.Context, projectID, taskID, actorID string) error {
+	_, err := s.q.Exec(ctx, `
+		UPDATE task_operations
+		SET state = 'INVALIDATED', acted_at = now()
+		WHERE project_id = $1 AND task_id = $2 AND actor_id = $3 AND state = 'UNDONE'`,
+		projectID, taskID, actorID)
+	return err
 }
 
 func (s *store) UpdateTask(ctx context.Context, projectID, taskID string, expectedVersion int64, input app.UpdateTaskInput) (domain.Task, error) {
@@ -869,6 +1023,14 @@ func getTask(ctx context.Context, q querier, projectID, taskID string) (domain.T
 	return item, err
 }
 
+func getTaskForUpdate(ctx context.Context, q querier, projectID, taskID string) (domain.Task, error) {
+	item, err := scanTask(q.QueryRow(ctx, taskSelect+` WHERE t.project_id = $1 AND t.id = $2 FOR UPDATE OF t`, projectID, taskID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Task{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
 func scanProject(row scanner) (domain.Project, error) {
 	var item domain.Project
 	var metadata []byte
@@ -943,6 +1105,24 @@ func scanAssignmentOperation(row scanner) (domain.AssignmentOperation, error) {
 	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.UserID, &item.MembershipID,
 		&item.Operation, &item.ActorID, &item.RequestID, &item.OccurredAt)
 	return item, err
+}
+
+func scanTaskOperation(row scanner) (domain.TaskOperation, error) {
+	var item domain.TaskOperation
+	var before, after []byte
+	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.ActorID, &item.RequestID,
+		&item.OperationType, &item.ChangedFields, &before, &after, &item.BaseVersion,
+		&item.ResultingVersion, &item.LastActionVersion, &item.State, &item.CreatedAt, &item.ActedAt)
+	if err != nil {
+		return item, err
+	}
+	if err := json.Unmarshal(before, &item.BeforeState); err != nil {
+		return item, err
+	}
+	if err := json.Unmarshal(after, &item.AfterState); err != nil {
+		return item, err
+	}
+	return item, nil
 }
 
 func scanEvent(row scanner) (domain.Event, error) {

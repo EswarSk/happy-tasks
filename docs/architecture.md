@@ -18,7 +18,7 @@ The implementation is a **modular monolith**, not a collection of microservices.
 
 Each successful mutation writes both the new domain state and a compact synchronization event in one database transaction. A project-scoped Server-Sent Events (SSE) endpoint replays durable events after a client's last acknowledged sequence and then streams new events. PostgreSQL `LISTEN/NOTIFY` is only a low-latency wake-up signal; correctness comes from the durable event table.
 
-This design is intentionally small enough to build and explain in two days, while preserving clean seams for a broker, a dedicated real-time gateway, read replicas, partitioning, presence, and CRDT-based text collaboration later.
+This design is intentionally small enough to build and explain in two days, while preserving clean seams for a broker, a dedicated real-time gateway, read replicas, partitioning, presence, and richer CRDT features later. The current build already includes field-level metadata undo/redo and a Yjs description channel.
 
 ## 2. Requirements distilled from the assignment
 
@@ -40,14 +40,14 @@ The two-day build targets the highest-signal portions of:
 
 - **Performance and scale:** cursor pagination, virtualized rendering, indexes, a 10,000-task seed, and a repeatable load test.
 - **Developer experience:** tests, CI, OpenAPI, generated contract types, migrations, seed data, Docker, and a clean README.
-- **Advanced collaboration, limited scope:** an activity feed derived from the same synchronization events. Presence and collaborative text editing remain designed extension points.
+- **Advanced collaboration, limited scope:** actor-scoped metadata undo/redo plus a Yjs description document; presence and richer collaboration remain extension points.
 
 ### 2.3 Bonus-point mapping
 
 | Bonus | Two-day implementation | Later extension |
 | --- | --- | --- |
-| Undo/redo | One compensating undo for task status changes if core work is complete | General command history and redo |
-| OT/CRDT-inspired collaboration | Not claimed in the initial build | Yjs-backed description document over a separate WebSocket channel |
+| Undo/redo | Actor-scoped field-level inverse operations for task metadata | General command history for deletes/dependencies |
+| OT/CRDT-inspired collaboration | Yjs-backed description document over a separate WebSocket channel | Awareness/presence and richer block editing |
 | Event-based backend | Durable append-only `sync_events` stream | Relay events to NATS/Kafka |
 | Clear domain model | Explicit Go domain services and database constraints | Extract only when scale requires it |
 | Type-safe API contract | OpenAPI as source of truth; generated Go and TypeScript types | Versioned public API SDKs |
@@ -56,7 +56,7 @@ The two-day build targets the highest-signal portions of:
 | Caching strategy | Browser query cache and PostgreSQL buffer cache; no Redis without measured need | Redis for hot projections/rate limits |
 | Rate limiting/backpressure | Per-instance token buckets, payload limits, bounded SSE queues | Gateway/Redis global limits and dedicated fan-out tier |
 
-The initial build must not call ordinary version-conflict handling a CRDT. CRDTs solve a different problem and should be added only for fields, such as rich text, that benefit from automatic concurrent-operation merging.
+The implementation does not call ordinary version-conflict handling a CRDT. CRDTs solve a different problem and are used only for the description field, where automatic concurrent character-level merging is valuable.
 
 ## 3. Goals and non-goals
 
@@ -76,7 +76,7 @@ The initial build must not call ordinary version-conflict handling a CRDT. CRDTs
 - Production authentication, billing, organization administration, or granular RBAC.
 - General offline-first behavior.
 - General-purpose event sourcing. Current relational rows remain authoritative.
-- Rich-text collaborative editing, live cursors, or a custom CRDT implementation.
+- Live cursors, presence, and a general-purpose rich-text/block CRDT beyond the description document.
 - Microservices, Kubernetes, Kafka, Redis, or multi-region active-active writes.
 - Full-text search, arbitrary workflow builders, Gantt charts, and external integrations.
 - Perfect fairness for a single project with extreme write contention.
@@ -523,7 +523,7 @@ Use SSE for the initial synchronization channel because application writes alrea
 
 Use a fetch-based SSE client so headers, explicit cursors, response status, and `AbortSignal` are controllable. In production, same-site cookie authentication avoids exposing credentials in URLs.
 
-WebSockets are reserved for future high-frequency ephemeral features such as presence, cursors, and CRDT operations. Those semantics should not complicate durable task mutation delivery.
+WebSockets carry only the high-frequency description CRDT channel; durable task metadata still uses REST plus SSE. Ephemeral presence and cursors can be added as another isolated room without complicating durable task mutation delivery.
 
 ### 9.2 SSE event envelope
 
@@ -854,7 +854,7 @@ In production, route `/api` and `/events` through the same TLS origin to avoid C
 - Transactional `sync_events` and `pg_notify` wake-ups.
 - In-process SSE hubs with bounded queues.
 - Cursor queries, indexes, virtualization, and browser query cache.
-- No Redis, external broker, microservice, or CRDT runtime.
+- No Redis, external broker, or microservice; the isolated Yjs description runtime is included.
 
 This is the code that should actually exist and be demonstrated.
 
@@ -883,7 +883,7 @@ There is no database-and-broker dual write. The durable database event is always
 - Add derived read models for activity, analytics, and search.
 - Isolate hot projects across stream partitions and real-time gateway shards.
 - Add a separate presence/cursor channel because ephemeral events do not need durable replay.
-- Add Yjs/Automerge only for collaborative descriptions. Persist snapshots plus incremental CRDT updates and bridge document-change notifications into the activity stream.
+- Compact Yjs description snapshots plus incremental CRDT updates on a bounded schedule; add awareness/presence as an ephemeral channel.
 - Consider regional read delivery and a single write home per project before attempting multi-region active-active writes.
 
 ## 19. Important tradeoffs
@@ -900,7 +900,7 @@ There is no database-and-broker dual write. The durable database event is always
 | Advisory lock for graph writes | Correct cycle prevention under concurrency | Same-project dependency writes serialize |
 | Normalized queryable fields + JSONB custom fields | Good integrity and extension flexibility | JSONB fields have weaker schema and should not absorb core fields |
 | No Redis initially | Fewer failure modes and honest scope | Approximate limits per instance; no distributed presence |
-| CRDT deferred to text only | Core semantics stay understandable | No simultaneous character-level editing in v1 |
+| CRDT limited to text only | Core metadata semantics stay understandable | Block-level formatting and awareness are future work |
 
 ## 20. Two-day implementation order
 
@@ -930,7 +930,7 @@ The priority is one proven end-to-end synchronization slice before breadth.
 7. Finish CI, README, architecture diagram, and clean-clone rehearsal.
 8. Record the five-minute demo only after a timed dry run.
 
-**Cut order if time is tight:** general undo, activity-feed polish, extra filters, and visual flourishes. Never cut transactional events, reconnect replay, graph correctness, conflict handling, clean setup, or core tests.
+**Cut order if time is tight:** global cross-entity undo, activity-feed polish, extra filters, and visual flourishes. Never cut transactional events, reconnect replay, graph correctness, conflict handling, clean setup, or core tests.
 
 ## 21. Demo and acceptance criteria
 
@@ -994,6 +994,6 @@ The most compelling message is not that the application broadcasts updates. It i
 | ADR-007 | Use keyset pagination and virtualized rendering | Implement now |
 | ADR-008 | Use optimistic concurrency and idempotent mutations | Implement now |
 | ADR-009 | Use PostgreSQL notification only as a wake-up hint | Implement now |
-| ADR-010 | Avoid Redis, broker, microservices, and CRDT in the initial build | Implement now |
+| ADR-010 | Avoid Redis, broker, and microservices in the initial build | Implement now |
 | ADR-011 | Add a broker/realtime gateway only after measured scaling pressure | Future |
-| ADR-012 | Use a separate CRDT channel only for collaborative text | Future |
+| ADR-012 | Use a separate CRDT channel only for collaborative text | Implement now |

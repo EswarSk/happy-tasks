@@ -115,6 +115,7 @@ export interface UpdateTaskInput {
   description?: string;
   status?: TaskStatus;
   priority?: TaskPriority;
+  customFields?: Record<string, string>;
   assigneeIds?: string[];
   tags?: string[];
   expectedVersion: number;
@@ -145,6 +146,8 @@ export interface WorkspaceApi {
   getTask(projectId: string, taskId: string): Promise<Task>;
   createTask(projectId: string, title: string): Promise<Task>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
+  undoTask(projectId: string, taskId: string): Promise<Task>;
+  redoTask(projectId: string, taskId: string): Promise<Task>;
   deleteTask(projectId: string, taskId: string, expectedVersion: number): Promise<{ id: string; deleted: true; version: number }>;
   listComments(projectId: string, taskId: string, cursor?: string): Promise<Page<Comment>>;
   createComment(projectId: string, taskId: string, body: string, clientId: string): Promise<Comment>;

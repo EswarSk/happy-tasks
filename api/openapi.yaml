@@ -296,6 +296,65 @@ paths:
               schema: {$ref: "#/components/schemas/TaskTombstone"}
         "409": {$ref: "#/components/responses/Error"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/undo:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    post:
+      tags: [Synchronization]
+      operationId: undoTaskMetadata
+      description: Reverses the authenticated actor's latest task metadata operation when the affected fields have not been changed by another collaborator.
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Task after the inverse operation.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Task"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/redo:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    post:
+      tags: [Synchronization]
+      operationId: redoTaskMetadata
+      description: Reapplies the authenticated actor's latest undone task metadata operation when the affected fields still match its prior state.
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Task after the replayed operation.
+          headers:
+            ETag: {$ref: "#/components/headers/ETag"}
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Task"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/description/live:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Synchronization]
+      operationId: collaborateTaskDescription
+      description: WebSocket endpoint carrying Yjs CRDT updates. The first client initializes a durable snapshot; subsequent updates are opaque binary updates relayed to all peers and stored for replay.
+      responses:
+        "101":
+          description: Switching Protocols to the collaborative description stream.
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/tasks/{taskId}/dependencies:
     parameters:
       - {$ref: "#/components/parameters/ProjectId"}

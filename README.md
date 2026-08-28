@@ -12,6 +12,8 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Dependency creation/removal with transactional cycle prevention.
 - Append-oriented comments with cursor-ready indexing and near-real-time delivery.
 - Conflict detection through `If-Match` versions and retry-safe writes through idempotency keys.
+- Field-level task operation history with actor-scoped undo/redo; independent stale edits (for example status and priority) merge safely.
+- Yjs CRDT description editing over a task-scoped WebSocket with durable snapshots, replayable updates, and a searchable text projection.
 - Durable, ordered project event streams with reconnect/replay semantics.
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
 - Mock mode for isolated UI development and API mode for the integrated product.
@@ -106,7 +108,7 @@ Every successful mutation performs these steps atomically:
 
 The browser patches only affected React Query entries. If it detects a sequence gap, it invalidates the relevant paginated data and catches up from the durable stream. Reconnects send both an explicit cursor and `Last-Event-ID`. Slow or interrupted clients therefore converge without a full-project payload.
 
-Ordinary task edits use optimistic concurrency, not a pretend CRDT. A real CRDT such as Yjs is reserved for a future rich-text description channel where simultaneous character-level merging is valuable. Scalar status, priority, and dependency changes need understandable business conflicts and invariants instead.
+Task metadata uses field-level optimistic concurrency and explicit inverse operations. A stale write is accepted only when its changed fields are disjoint from committed operations after the client's version; same-field edits remain understandable business conflicts. Descriptions use Yjs over a task-scoped WebSocket because simultaneous character-level edits benefit from CRDT convergence. Go stores and relays opaque Yjs updates while PostgreSQL retains a snapshot and ordered deltas.
 
 ## Data and scale choices
 
@@ -163,9 +165,11 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 2. Create and edit a task in one window; observe the compact SSE update in the other.
 3. Add a comment and show the remote comment count/feed update.
 4. Add and remove a dependency, then attempt a cycle and inspect the domain error.
-5. Submit a stale task version to show the `409` conflict response.
-6. Switch to the seeded scale project to demonstrate cursor loading and virtualization.
+5. Change status and priority from two stale browser views to show field-level merging, then use the detail-header undo/redo controls.
+6. Open the same task in two browser windows and edit its description concurrently to observe Yjs convergence.
+7. Submit a stale same-field version to show the `409` conflict response.
+8. Switch to the seeded scale project to demonstrate cursor loading and virtualization.
 
 ## Deliberate boundaries
 
-Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Presence, live cursors, comment reactions, rich-text CRDT editing, global search, and broker-backed fan-out are documented extension points, not falsely claimed as completed features. The current design keeps those additions isolated so they do not force a rewrite of the core model.
+Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Presence, live cursors, comment reactions, global search, and broker-backed fan-out remain documented extension points. The description CRDT is already isolated behind its WebSocket/document tables, so those additions do not force a rewrite of the core task model.

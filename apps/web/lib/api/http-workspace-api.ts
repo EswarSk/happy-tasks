@@ -164,6 +164,22 @@ export class HttpWorkspaceApi implements WorkspaceApi {
     return normalizeTask(task);
   }
 
+  async undoTask(projectId: string, taskId: string) {
+    const task = await this.request<ApiTask>(`/v1/projects/${projectId}/tasks/${taskId}/undo`, {
+      method: "POST",
+      headers: { "Idempotency-Key": newRequestId() },
+    });
+    return normalizeTask(task);
+  }
+
+  async redoTask(projectId: string, taskId: string) {
+    const task = await this.request<ApiTask>(`/v1/projects/${projectId}/tasks/${taskId}/redo`, {
+      method: "POST",
+      headers: { "Idempotency-Key": newRequestId() },
+    });
+    return normalizeTask(task);
+  }
+
   deleteTask(projectId: string, taskId: string, expectedVersion: number) {
     return this.request<{ id: string; deleted: true; version: number }>(`/v1/projects/${projectId}/tasks/${taskId}`, {
       method: "DELETE",

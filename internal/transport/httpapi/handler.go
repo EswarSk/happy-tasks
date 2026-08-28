@@ -27,13 +27,19 @@ const maxRequestBody = 1 << 20
 type Handler struct {
 	service            *app.Service
 	hub                *syncstream.Hub
+	descriptionHub     *descriptionHub
 	defaultActorID     string
 	allowActorOverride bool
+	allowedOrigins     map[string]struct{}
 	logger             *slog.Logger
 }
 
 func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger) http.Handler {
-	h := &Handler{service: service, hub: hub, defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, logger: logger}
+	originSet := make(map[string]struct{}, len(allowedOrigins))
+	for _, origin := range allowedOrigins {
+		originSet[strings.TrimSuffix(origin, "/")] = struct{}{}
+	}
+	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -67,6 +73,9 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 				r.Get("/", h.getTask)
 				r.Patch("/", h.updateTask)
 				r.Delete("/", h.deleteTask)
+				r.Post("/undo", h.undoTask)
+				r.Post("/redo", h.redoTask)
+				r.Get("/description/live", h.descriptionWebSocket)
 				r.Post("/dependencies", h.addDependency)
 				r.Delete("/dependencies/{dependencyTaskId}", h.removeDependency)
 				r.Get("/comments", h.listComments)
@@ -441,6 +450,34 @@ func (h *Handler) deleteTask(w http.ResponseWriter, r *http.Request) {
 	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
 }
 
+func (h *Handler) undoTask(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.UndoTask(r.Context(), h.mutationMeta(r, nil), projectID, taskID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", etag(result.Value.Version))
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) redoTask(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.RedoTask(r.Context(), h.mutationMeta(r, nil), projectID, taskID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	w.Header().Set("ETag", etag(result.Value.Version))
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
+}
+
 func (h *Handler) addDependency(w http.ResponseWriter, r *http.Request) {
 	projectID, taskID, ok := taskPath(w, r)
 	if !ok {
@@ -732,7 +769,7 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 			status = http.StatusNotFound
 		case "FORBIDDEN", "INSUFFICIENT_ROLE":
 			status = http.StatusForbidden
-		case "VERSION_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "ALREADY_EXISTS", "FINAL_ACTIVE_OWNER":
+		case "VERSION_CONFLICT", "OPERATION_CONFLICT", "IDEMPOTENCY_KEY_REUSED", "ALREADY_EXISTS", "FINAL_ACTIVE_OWNER":
 			status = http.StatusConflict
 		case "PRECONDITION_REQUIRED":
 			status = http.StatusPreconditionRequired

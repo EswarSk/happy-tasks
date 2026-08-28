@@ -2,7 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Save, Trash2, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Redo2, Save, Trash2, Undo2, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -15,9 +15,10 @@ import { PrioritySelect, TaskStatusSelect } from "@/components/patterns/task-bad
 import { CommentThread } from "@/features/comments/comment-thread";
 import { AssigneePicker } from "./assignee-picker";
 import { AssignmentHistory } from "./assignment-history";
+import { CollaborativeDescription } from "./collaborative-description";
 import { patchTaskInCache, removeTaskFromCache } from "./query-cache";
 import type { Member, Task, UpdateTaskInput } from "@/lib/api";
-import { WorkspaceApiError, workspaceApi } from "@/lib/api";
+import { WorkspaceApiError, dataSource, workspaceApi } from "@/lib/api";
 
 interface TaskDetailPanelProps {
   projectId: string;
@@ -92,6 +93,32 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
     },
   });
 
+  const undoTask = useMutation({
+    mutationFn: () => workspaceApi.undoTask(projectId, taskId),
+    onSuccess: (saved) => {
+      patchTaskInCache(queryClient, projectId, { ...saved, syncState: "synced" });
+      setDraft({ taskId: saved.id, title: saved.title, description: saved.description });
+      toast.success("Last task edit undone");
+    },
+    onError: (error) => {
+      if (error instanceof WorkspaceApiError && (error.status === 409 || error.apiError.code === "OPERATION_CONFLICT")) setConflictOpen(true);
+      else toast.error(error instanceof Error ? error.message : "Nothing to undo");
+    },
+  });
+
+  const redoTask = useMutation({
+    mutationFn: () => workspaceApi.redoTask(projectId, taskId),
+    onSuccess: (saved) => {
+      patchTaskInCache(queryClient, projectId, { ...saved, syncState: "synced" });
+      setDraft({ taskId: saved.id, title: saved.title, description: saved.description });
+      toast.success("Task edit redone");
+    },
+    onError: (error) => {
+      if (error instanceof WorkspaceApiError && (error.status === 409 || error.apiError.code === "OPERATION_CONFLICT")) setConflictOpen(true);
+      else toast.error(error instanceof Error ? error.message : "Nothing to redo");
+    },
+  });
+
   if (query.isLoading || !task) {
     return <div className="h-full bg-[var(--panel)] p-5"><div className="h-8 w-2/3 animate-pulse rounded bg-[var(--skeleton)]" /><div className="mt-6 space-y-3">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded-lg bg-[var(--skeleton)]" />)}</div></div>;
   }
@@ -108,6 +135,8 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
           <span className="font-mono text-[11px] font-semibold text-[var(--text-muted)]">{task.key}</span>
           <button className="text-[var(--text-muted)] hover:text-[var(--text)]" aria-label="Copy task key" onClick={() => { void navigator.clipboard?.writeText(task.key); toast.success("Task key copied"); }}><Copy className="size-3.5" /></button>
           <span className="ml-auto"><OptimisticStateIndicator state={task.syncState} /></span>
+          <Button variant="ghost" size="icon" className="hidden sm:inline-flex" aria-label="Undo last task edit" title="Undo last task edit" disabled={undoTask.isPending || redoTask.isPending} onClick={() => undoTask.mutate()}><Undo2 className="size-4" /></Button>
+          <Button variant="ghost" size="icon" className="hidden sm:inline-flex" aria-label="Redo task edit" title="Redo task edit" disabled={undoTask.isPending || redoTask.isPending} onClick={() => redoTask.mutate()}><Redo2 className="size-4" /></Button>
           {onToggleExpand && <Button variant="ghost" size="icon" className="hidden lg:inline-flex" aria-label={detailExpanded ? "Restore split view" : "Expand task details"} title={detailExpanded ? "Restore split view" : "Expand task details"} onClick={onToggleExpand}>{detailExpanded ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}</Button>}
           <Button variant="ghost" size="icon" aria-label="More task actions" onClick={() => setDeleteOpen(true)}><MoreHorizontal className="size-4" /></Button>
           <Button variant="ghost" size="icon" aria-label="Close task details" onClick={onClose}><X className="size-4" /></Button>
@@ -138,8 +167,13 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
 
           <section aria-labelledby="description-heading" className="border-b border-[var(--border-subtle)] py-5">
             <h2 id="description-heading" className="section-label">Description</h2>
-            <Textarea value={description} onChange={(event) => setDraft({ taskId: task.id, title, description: event.target.value })} rows={5} className="mt-3" placeholder="Describe the outcome, context, and acceptance criteria…" />
-            {(description !== task.description || title !== task.title) && <div className="mt-2 flex justify-end"><Button size="sm" onClick={saveTextFields} disabled={update.isPending}><Save className="size-3.5" />Save changes</Button></div>}
+            {dataSource === "api" ? <>
+              <CollaborativeDescription key={task.id} projectId={projectId} taskId={task.id} initialValue={description} onValueChange={(next) => setDraft({ taskId: task.id, title, description: next })} />
+              {title !== task.title && <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => update.mutate({ title: title.trim() || task.title, expectedVersion: task.version })} disabled={update.isPending}><Save className="size-3.5" />Save title</Button></div>}
+            </> : <>
+              <Textarea value={description} onChange={(event) => setDraft({ taskId: task.id, title, description: event.target.value })} rows={5} className="mt-3" placeholder="Describe the outcome, context, and acceptance criteria…" />
+              {(description !== task.description || title !== task.title) && <div className="mt-2 flex justify-end"><Button size="sm" onClick={saveTextFields} disabled={update.isPending}><Save className="size-3.5" />Save changes</Button></div>}
+            </>}
           </section>
 
           <section aria-labelledby="dependencies-heading" className="border-b border-[var(--border-subtle)] py-5">

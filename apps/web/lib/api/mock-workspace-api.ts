@@ -108,6 +108,16 @@ interface MockStore {
   tasks: Map<string, Task[]>;
   comments: Map<string, Comment[]>;
   assignmentHistory: Map<string, AssignmentHistoryItem[]>;
+  operations: Map<string, MockTaskOperation[]>;
+}
+
+interface MockTaskOperation {
+  id: string;
+  actorId: string;
+  fields: string[];
+  before: Partial<Task>;
+  after: Partial<Task>;
+  state: "ACTIVE" | "UNDONE" | "INVALIDATED";
 }
 
 declare global {
@@ -116,10 +126,11 @@ declare global {
 
 function store(): MockStore {
   if (!globalThis.__happyTaskMockStore) {
-    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), assignmentHistory: new Map() };
+    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), assignmentHistory: new Map(), operations: new Map() };
   }
   // Preserve hot-reload compatibility with a store created before assignment history existed.
   globalThis.__happyTaskMockStore.assignmentHistory ??= new Map();
+  globalThis.__happyTaskMockStore.operations ??= new Map();
   return globalThis.__happyTaskMockStore;
 }
 
@@ -273,12 +284,32 @@ export class MockWorkspaceApi implements WorkspaceApi {
     await delay(560);
     const task = tasksFor(projectId).find((item) => item.id === taskId);
     if (!task) throw new WorkspaceApiError(404, { code: "TASK_NOT_FOUND", message: "Task not found." });
-    if (input.expectedVersion !== task.version) {
+    const fields = Object.keys(input).filter((field) => field !== "expectedVersion");
+    const operations = store().operations.get(taskId) ?? [];
+    if (input.expectedVersion < 1 || input.expectedVersion > task.version || (input.expectedVersion < task.version && operations.some((operation) => operation.state !== "INVALIDATED" && operation.fields.some((field) => fields.includes(field))))) {
       throw new WorkspaceApiError(409, { code: "VERSION_CONFLICT", message: "This task changed while you were editing it.", details: { current: structuredClone(task) } });
+    }
+    const before: Partial<Task> = {};
+    const after: Partial<Task> = {};
+    for (const field of fields) {
+      const key = field as keyof Task;
+      before[key] = structuredClone(task[key]) as never;
     }
     const previousAssigneeIds = new Set(task.assigneeIds);
     const assignmentHistory = input.assigneeIds ? assignmentHistoryFor(projectId, taskId) : undefined;
-    Object.assign(task, input, { version: task.version + 1, updatedAt: new Date().toISOString() });
+    if (input.title !== undefined) task.title = input.title;
+    if (input.description !== undefined) task.description = input.description;
+    if (input.status !== undefined) task.status = input.status;
+    if (input.priority !== undefined) task.priority = input.priority;
+    if (input.customFields !== undefined) task.customFields = structuredClone(input.customFields);
+    if (input.assigneeIds !== undefined) task.assigneeIds = [...input.assigneeIds];
+    if (input.tags !== undefined) task.tags = [...input.tags];
+    task.version += 1;
+    task.updatedAt = new Date().toISOString();
+    for (const field of fields) {
+      const key = field as keyof Task;
+      after[key] = structuredClone(task[key]) as never;
+    }
     if (input.assigneeIds) {
       const nextAssigneeIds = new Set(input.assigneeIds);
       const changes = [
@@ -298,6 +329,38 @@ export class MockWorkspaceApi implements WorkspaceApi {
         occurredAt,
       })));
     }
+    const operation: MockTaskOperation = { id: crypto.randomUUID(), actorId: demoMembers[0].id, fields, before, after, state: "ACTIVE" };
+    for (const previous of operations) if (previous.state === "UNDONE") previous.state = "INVALIDATED";
+    operations.push(operation);
+    store().operations.set(taskId, operations);
+    return structuredClone(task);
+  }
+
+  async undoTask(projectId: string, taskId: string) {
+    await delay(280);
+    return this.replayOperation(projectId, taskId, "ACTIVE", "UNDONE");
+  }
+
+  async redoTask(projectId: string, taskId: string) {
+    await delay(280);
+    return this.replayOperation(projectId, taskId, "UNDONE", "ACTIVE");
+  }
+
+  private replayOperation(projectId: string, taskId: string, from: MockTaskOperation["state"], to: MockTaskOperation["state"]) {
+    const task = tasksFor(projectId).find((item) => item.id === taskId);
+    const operation = [...(store().operations.get(taskId) ?? [])].reverse().find((item) => item.state === from);
+    if (!task || !operation) throw new WorkspaceApiError(422, { code: to === "UNDONE" ? "UNDO_NOT_AVAILABLE" : "REDO_NOT_AVAILABLE", message: to === "UNDONE" ? "There is no task edit available to undo." : "There is no task edit available to redo." });
+    const expected = to === "UNDONE" ? operation.after : operation.before;
+    for (const field of operation.fields) {
+      if (JSON.stringify(task[field as keyof Task]) !== JSON.stringify(expected[field as keyof Task])) {
+        throw new WorkspaceApiError(409, { code: "OPERATION_CONFLICT", message: "This edit conflicts with a collaborator's change." });
+      }
+    }
+    const target = to === "UNDONE" ? operation.before : operation.after;
+    for (const field of operation.fields) (task[field as keyof Task] as never) = structuredClone(target[field as keyof Task]) as never;
+    task.version += 1;
+    task.updatedAt = new Date().toISOString();
+    operation.state = to;
     return structuredClone(task);
   }
 

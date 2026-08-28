@@ -152,9 +152,19 @@ type Store interface {
 
 	CreateTask(context.Context, string, CreateTaskInput, string) (domain.Task, error)
 	GetTask(context.Context, string, string) (domain.Task, error)
+	GetTaskForUpdate(context.Context, string, string) (domain.Task, error)
 	UpdateTask(context.Context, string, string, int64, UpdateTaskInput) (domain.Task, error)
 	DeleteTask(context.Context, string, string, int64) (domain.Task, error)
 	ReplaceTaskAssignees(context.Context, string, string, []string, string, string) ([]domain.AssignmentOperation, error)
+	ListTaskOperationsAfter(context.Context, string, string, int64) ([]domain.TaskOperation, error)
+	GetLatestTaskOperation(context.Context, string, string, string, string) (domain.TaskOperation, error)
+	CreateTaskOperation(context.Context, domain.TaskOperation) error
+	SetTaskOperationState(context.Context, string, string, int64) error
+	InvalidateRedoOperations(context.Context, string, string, string) error
+	EnsureTaskDescriptionDocument(context.Context, string, string) error
+	InitializeTaskDescriptionDocument(context.Context, string, string, []byte) (bool, error)
+	AppendTaskDescriptionUpdate(context.Context, string, string, string, []byte) error
+	UpdateTaskDescriptionProjection(context.Context, string, string, string) error
 
 	LockDependencyGraph(context.Context, string) error
 	DependencyExists(context.Context, string, string, string) (bool, error)
@@ -176,6 +186,7 @@ type Database interface {
 	ListComments(context.Context, string, string, CommentFilter) ([]domain.Comment, error)
 	ListMembers(context.Context, string, MemberFilter) ([]domain.Membership, error)
 	ListAssignmentOperations(context.Context, string, string, AssignmentFilter) ([]domain.AssignmentOperation, error)
+	GetTaskDescriptionDocument(context.Context, string, string) (domain.TaskDescriptionDocument, error)
 	ListEvents(context.Context, string, int64, int) ([]domain.Event, error)
 	ProjectStreamCursor(context.Context, string) (int64, error)
 	Ping(context.Context) error

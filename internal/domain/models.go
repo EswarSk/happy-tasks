@@ -122,6 +122,35 @@ type Task struct {
 	UpdatedAt     time.Time      `json:"updatedAt"`
 }
 
+// TaskOperation records a reversible metadata edit. BeforeState and AfterState
+// contain only the fields changed by this operation, which lets the service
+// safely merge independent edits made from a stale client version.
+type TaskOperation struct {
+	ID                string         `json:"id"`
+	ProjectID         string         `json:"projectId"`
+	TaskID            string         `json:"taskId"`
+	ActorID           string         `json:"actorId"`
+	RequestID         string         `json:"requestId"`
+	OperationType     string         `json:"operationType"`
+	ChangedFields     []string       `json:"changedFields"`
+	BeforeState       map[string]any `json:"beforeState"`
+	AfterState        map[string]any `json:"afterState"`
+	BaseVersion       int64          `json:"baseVersion"`
+	ResultingVersion  int64          `json:"resultingVersion"`
+	LastActionVersion int64          `json:"lastActionVersion"`
+	State             string         `json:"state"`
+	CreatedAt         time.Time      `json:"createdAt"`
+	ActedAt           *time.Time     `json:"actedAt,omitempty"`
+}
+
+type TaskDescriptionDocument struct {
+	ProjectID   string
+	TaskID      string
+	Initialized bool
+	Snapshot    []byte
+	Updates     [][]byte
+}
+
 type Comment struct {
 	ID        string     `json:"id"`
 	ProjectID string     `json:"projectId"`

@@ -61,7 +61,7 @@ function applyTaskEvent(queryClient: QueryClient, projectId: string, payload: Re
 export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
   const wrapped = event.payload.task ?? event.payload.comment;
   const payload = (wrapped ?? event.payload) as Record<string, unknown>;
-  if (event.type === "task.created" || event.type === "task.updated") {
+  if (event.type === "task.created" || event.type === "task.updated" || event.type === "task.description.updated") {
     applyTaskEvent(queryClient, event.projectId, payload);
     if (event.type === "task.created") void queryClient.invalidateQueries({ queryKey: ["projects"] });
   }

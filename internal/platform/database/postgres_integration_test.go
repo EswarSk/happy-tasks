@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -70,6 +71,23 @@ func TestTransactionalFlows(t *testing.T) {
 		}
 	}
 
+	// Two fresh clients can both observe an uninitialized Yjs document. The
+	// database conditional update makes initialization single-winner so the
+	// second baseline cannot be merged into the document a second time.
+	firstSnapshot := []byte{1, 2, 3}
+	if _, err := service.PersistTaskDescriptionUpdate(ctx, testMeta("description-init:"+taskB), testProject, taskB, "First description", firstSnapshot, true); err != nil {
+		t.Fatalf("initialize description: %v", err)
+	}
+	_, err = service.PersistTaskDescriptionUpdate(ctx, testMeta("description-race:"+taskB), testProject, taskB, "Duplicate description", []byte{4, 5, 6}, true)
+	assertDomainCode(t, err, "DESCRIPTION_ALREADY_INITIALIZED")
+	document, err := service.GetTaskDescriptionDocument(ctx, testActor, testProject, taskB)
+	if err != nil {
+		t.Fatalf("get initialized description: %v", err)
+	}
+	if !document.Initialized || !bytes.Equal(document.Snapshot, firstSnapshot) || len(document.Updates) != 0 {
+		t.Fatalf("description initialization race changed the winner: %#v", document)
+	}
+
 	updated, err := service.UpdateTask(ctx, testMeta("update:"+taskA), testProject, taskA, 1, app.UpdateTaskInput{Status: statusPtr(domain.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -77,8 +95,30 @@ func TestTransactionalFlows(t *testing.T) {
 	if updated.Value.Version != 2 {
 		t.Fatalf("version = %d, want 2", updated.Value.Version)
 	}
-	_, err = service.UpdateTask(ctx, testMeta("stale:"+taskA), testProject, taskA, 1, app.UpdateTaskInput{Priority: priorityPtr(domain.PriorityHigh)})
+	merged, err := service.UpdateTask(ctx, testMeta("stale-disjoint:"+taskA), testProject, taskA, 1, app.UpdateTaskInput{Priority: priorityPtr(domain.PriorityHigh)})
+	if err != nil {
+		t.Fatalf("merge independent stale priority: %v", err)
+	}
+	if merged.Value.Version != 3 || merged.Value.Status != domain.StatusInProgress || merged.Value.Priority != domain.PriorityHigh {
+		t.Fatalf("independent edits did not merge: %#v", merged.Value)
+	}
+	_, err = service.UpdateTask(ctx, testMeta("stale-overlap:"+taskA), testProject, taskA, 1, app.UpdateTaskInput{Status: statusPtr(domain.StatusDone)})
 	assertDomainCode(t, err, "VERSION_CONFLICT")
+
+	undone, err := service.UndoTask(ctx, testMeta("undo:"+taskA), testProject, taskA)
+	if err != nil {
+		t.Fatalf("undo task: %v", err)
+	}
+	if undone.Value.Status != domain.StatusInProgress || undone.Value.Priority != domain.PriorityMedium {
+		t.Fatalf("undo overwrote an independent field: %#v", undone.Value)
+	}
+	redone, err := service.RedoTask(ctx, testMeta("redo:"+taskA), testProject, taskA)
+	if err != nil {
+		t.Fatalf("redo task: %v", err)
+	}
+	if redone.Value.Status != domain.StatusInProgress || redone.Value.Priority != domain.PriorityHigh {
+		t.Fatalf("redo overwrote an independent field: %#v", redone.Value)
+	}
 
 	if _, err := service.AddDependency(ctx, testMeta("edge:"+taskA), testProject, taskA, taskB); err != nil {
 		t.Fatalf("add dependency: %v", err)
