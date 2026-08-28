@@ -107,17 +107,17 @@ export function TaskDependencyGraph({ task, relatedTasks, isLoading = false, onO
         <Badge className="shrink-0 border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]">{task.dependencyIds.length + task.blockingCount} links</Badge>
       </div>
 
-      <div className="@container mt-4 rounded-2xl border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+      <div className="dependency-map-canvas mt-4 rounded-2xl border border-[var(--border)] p-3">
         <div className="dependency-map-grid grid items-center gap-2">
           <TaskColumn label="Depends on" tasks={dependencies} totalCount={task.dependencyIds.length} emptyLabel="Nothing upstream" onOpenTask={onOpenTask} />
-          <div className="dependency-map-connector flex items-center justify-center" aria-hidden="true"><div className="dependency-map-connector-line bg-[var(--border)]" /><ArrowRight className="size-4 shrink-0 text-[var(--text-muted)]" /></div>
+          <div className="dependency-map-connector flex items-center justify-center" aria-hidden="true"><div className="dependency-map-connector-line bg-[var(--border)]" /><ArrowRight className="dependency-map-connector-arrow size-4 shrink-0 text-[var(--text-muted)]" /></div>
           <div className="rounded-2xl border-2 border-[var(--brand)] bg-[var(--panel)] p-4 shadow-lg shadow-[var(--shadow)]">
             <div className="flex items-center justify-between gap-2"><span className="text-[10px] font-bold tracking-[.08em] text-[var(--brand)] uppercase">Current task</span><span className="size-2 rounded-full bg-[var(--brand)] shadow-[0_0_0_4px_var(--focus-soft)]" /></div>
             <p className="mt-2 line-clamp-3 text-sm font-semibold leading-5 text-[var(--text)]">{task.title}</p>
             <div className="mt-3 flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-semibold text-[var(--text-muted)]">{task.key}</span><Badge className="border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]">{statusLabels[task.status]}</Badge><PriorityBadge priority={task.priority} /></div>
             <div className="mt-4 grid grid-cols-2 gap-2 border-t border-[var(--border-subtle)] pt-3 text-[10px] text-[var(--text-muted)]"><span><strong className="block text-sm text-[var(--text)]">{task.dependencyIds.length}</strong>upstream</span><span><strong className="block text-sm text-[var(--text)]">{task.blockingCount}</strong>downstream</span></div>
           </div>
-          <div className="dependency-map-connector flex items-center justify-center" aria-hidden="true"><ArrowRight className="size-4 shrink-0 text-[var(--text-muted)]" /><div className="dependency-map-connector-line bg-[var(--border)]" /></div>
+          <div className="dependency-map-connector flex items-center justify-center" aria-hidden="true"><ArrowRight className="dependency-map-connector-arrow size-4 shrink-0 text-[var(--text-muted)]" /><div className="dependency-map-connector-line bg-[var(--border)]" /></div>
           {isLoading ? <div className="space-y-2"><div className="h-[86px] animate-pulse rounded-xl bg-[var(--skeleton)]" /><div className="h-[86px] animate-pulse rounded-xl bg-[var(--skeleton)]" /></div> : <TaskColumn label="Blocks" tasks={blockers} totalCount={task.blockingCount} emptyLabel="Nothing waiting on this" onOpenTask={onOpenTask} />}
         </div>
       </div>

@@ -1,9 +1,13 @@
 import type {
   AssignmentHistoryItem,
+  ActivityItem,
   Comment,
+  CommentReaction,
+  CommentReactionType,
   Dependency,
   Member,
   MemberFilters,
+  Notification,
   Page,
   Project,
   Task,
@@ -31,7 +35,7 @@ type ApiTask = Omit<Task, "status" | "priority" | "key" | "blockingCount"> & {
   key?: string;
   blockingCount?: number;
 };
-type ApiComment = Omit<Comment, "authorId"> & { authorId?: string; author?: { id: string } };
+type ApiComment = Omit<Comment, "authorId" | "reactions"> & { authorId?: string; author?: { id: string }; reactions?: Array<Omit<CommentReaction, "type"> & { type: Uppercase<CommentReactionType> }> };
 type ApiUser = {
   id: string;
   displayName: string;
@@ -72,7 +76,11 @@ const normalizeTask = (task: ApiTask): Task => ({
   priority: task.priority.toLowerCase() as TaskPriority,
   blockingCount: task.blockingCount ?? 0,
 });
-const normalizeComment = (comment: ApiComment): Comment => ({ ...comment, authorId: comment.authorId ?? comment.author?.id ?? demoActorId });
+const normalizeComment = (comment: ApiComment): Comment => ({
+  ...comment,
+  authorId: comment.authorId ?? comment.author?.id ?? demoActorId,
+  reactions: comment.reactions?.map((reaction) => ({ ...reaction, type: reaction.type.toLowerCase() as CommentReactionType })),
+});
 
 export class HttpWorkspaceApi implements WorkspaceApi {
   constructor(private readonly baseUrl: string) {}
@@ -134,6 +142,8 @@ export class HttpWorkspaceApi implements WorkspaceApi {
     if (filters.limit) params.set("limit", String(filters.limit));
     if (filters.status && filters.status !== "all") params.set("status", filters.status.toUpperCase());
     if (filters.priority && filters.priority !== "all") params.set("priority", filters.priority.toUpperCase());
+    if (filters.assigneeId) params.set("assignee", filters.assigneeId);
+    if (filters.tag) params.set("tag", filters.tag);
     if (filters.search) params.set("q", filters.search);
     const page = await this.request<{ items: ApiTask[]; nextCursor?: string }>(`/v1/projects/${projectId}/tasks?${params}`);
     const items = page.items.map(normalizeTask);
@@ -194,13 +204,28 @@ export class HttpWorkspaceApi implements WorkspaceApi {
     return { items: page.items.map(normalizeComment), nextCursor: page.nextCursor ?? null, totalCount: page.items.length };
   }
 
-  async createComment(projectId: string, taskId: string, body: string, clientId: string) {
+  async createComment(projectId: string, taskId: string, body: string, clientId: string, parentId?: string) {
     const comment = await this.request<ApiComment>(`/v1/projects/${projectId}/tasks/${taskId}/comments`, {
       method: "POST",
       headers: { "Idempotency-Key": clientId },
-      body: JSON.stringify({ id: clientId, body }),
+      body: JSON.stringify({ id: clientId, body, ...(parentId ? { parentId } : {}) }),
     });
     return normalizeComment(comment);
+  }
+
+  async setCommentReaction(projectId: string, taskId: string, commentId: string, type: CommentReactionType) {
+    return this.request<CommentReaction>(`/v1/projects/${projectId}/tasks/${taskId}/comments/${commentId}/reaction`, {
+      method: "PUT",
+      headers: { "Idempotency-Key": newRequestId() },
+      body: JSON.stringify({ type: type.toUpperCase() }),
+    });
+  }
+
+  async removeCommentReaction(projectId: string, taskId: string, commentId: string) {
+    return this.request<CommentReaction>(`/v1/projects/${projectId}/tasks/${taskId}/comments/${commentId}/reaction`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": newRequestId() },
+    });
   }
 
   addDependency(projectId: string, taskId: string, dependencyTaskId: string) {
@@ -223,5 +248,26 @@ export class HttpWorkspaceApi implements WorkspaceApi {
     if (cursor) params.set("cursor", cursor);
     const page = await this.request<{ items: AssignmentHistoryItem[]; nextCursor?: string }>(`/v1/projects/${projectId}/tasks/${taskId}/assignment-history?${params}`);
     return { items: page.items, nextCursor: page.nextCursor ?? null, totalCount: page.items.length };
+  }
+
+  async listActivity(projectId: string, after?: string): Promise<Page<ActivityItem>> {
+    const params = new URLSearchParams({ limit: "50" });
+    if (after) params.set("after", after);
+    const page = await this.request<{ items: ActivityItem[]; nextCursor?: string }>(`/v1/projects/${projectId}/activity?${params}`);
+    return { items: page.items, nextCursor: page.nextCursor ?? null, totalCount: page.items.length };
+  }
+
+  async listNotifications(projectId: string, unreadOnly = true, cursor?: string): Promise<Page<Notification>> {
+    const params = new URLSearchParams({ limit: "50", unread: String(unreadOnly) });
+    if (cursor) params.set("cursor", cursor);
+    const page = await this.request<{ items: Notification[]; nextCursor?: string }>(`/v1/projects/${projectId}/notifications?${params}`);
+    return { items: page.items, nextCursor: page.nextCursor ?? null, totalCount: page.items.length };
+  }
+
+  async markNotificationRead(projectId: string, notificationId: string) {
+    return this.request<Notification>(`/v1/projects/${projectId}/notifications/${notificationId}/read`, {
+      method: "POST",
+      headers: { "Idempotency-Key": newRequestId() },
+    });
   }
 }

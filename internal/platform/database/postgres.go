@@ -165,6 +165,10 @@ func listTasks(ctx context.Context, q querier, projectID string, filter app.Task
 	if filter.Priority != nil {
 		priority = string(*filter.Priority)
 	}
+	var assigneeID any
+	if filter.AssigneeID != nil {
+		assigneeID = *filter.AssigneeID
+	}
 	var cursorTime, cursorID any
 	if filter.Cursor != nil {
 		cursorTime, cursorID = filter.Cursor.UpdatedAt, filter.Cursor.ID
@@ -175,15 +179,27 @@ func listTasks(ctx context.Context, q querier, projectID string, filter app.Task
 		  AND ($3::task_priority IS NULL OR t.priority = $3)
 		  AND ($4::text = '' OR t.title ILIKE '%' || $4 || '%'
 		       OR t.description ILIKE '%' || $4 || '%'
-		       OR EXISTS (
-		           SELECT 1 FROM task_tags searched_tag
-		           WHERE searched_tag.project_id = t.project_id
-		             AND searched_tag.task_id = t.id
-		             AND searched_tag.tag ILIKE '%' || $4 || '%'
+			       OR EXISTS (
+			           SELECT 1 FROM task_tags searched_tag
+			           WHERE searched_tag.project_id = t.project_id
+			             AND searched_tag.task_id = t.id
+			             AND searched_tag.tag ILIKE '%' || $4 || '%'
+			       ))
+		  AND ($5::uuid IS NULL OR EXISTS (
+			       SELECT 1 FROM task_assignees filtered_assignee
+			       WHERE filtered_assignee.project_id = t.project_id
+			         AND filtered_assignee.task_id = t.id
+			         AND filtered_assignee.user_id = $5
 		       ))
-		  AND ($5::timestamptz IS NULL OR (t.updated_at, t.id) < ($5, $6::uuid))
+		  AND ($6::text = '' OR EXISTS (
+			       SELECT 1 FROM task_tags filtered_tag
+			       WHERE filtered_tag.project_id = t.project_id
+			         AND filtered_tag.task_id = t.id
+			         AND filtered_tag.tag ILIKE '%' || $6 || '%'
+		       ))
+		  AND ($7::timestamptz IS NULL OR (t.updated_at, t.id) < ($7, $8::uuid))
 		ORDER BY t.updated_at DESC, t.id DESC
-		LIMIT $7`, projectID, status, priority, filter.Search, cursorTime, cursorID, filter.PageSize)
+		LIMIT $9`, projectID, status, priority, filter.Search, assigneeID, filter.Tag, cursorTime, cursorID, filter.PageSize)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
@@ -203,21 +219,30 @@ func (p *Postgres) GetTask(ctx context.Context, projectID, taskID string) (domai
 	return getTask(ctx, p.pool, projectID, taskID)
 }
 
-func (p *Postgres) ListComments(ctx context.Context, projectID, taskID string, filter app.CommentFilter) ([]domain.Comment, error) {
+func (p *Postgres) ListComments(ctx context.Context, projectID, taskID, actorID string, filter app.CommentFilter) ([]domain.Comment, error) {
 	var cursorTime, cursorID any
 	if filter.Cursor != nil {
 		cursorTime, cursorID = filter.Cursor.CreatedAt, filter.Cursor.ID
 	}
 	rows, err := p.pool.Query(ctx, `
-		SELECT c.id, c.project_id, c.task_id, c.body, c.version, c.created_at,
+		SELECT c.id, c.project_id, c.task_id, c.parent_id, c.body, c.version, c.created_at,
 		       c.updated_at, c.deleted_at,
-		       u.id, u.display_name, u.email, u.created_at
+		       u.id, u.display_name, u.email, u.created_at,
+		       COALESCE((
+		           SELECT jsonb_agg(jsonb_build_object('type', summary.reaction_type, 'count', summary.reaction_count, 'reacted', summary.reacted) ORDER BY summary.reaction_type)
+		           FROM (
+		               SELECT reaction_type, count(*) AS reaction_count, bool_or(user_id = $6::uuid) AS reacted
+		               FROM comment_reactions
+		               WHERE project_id = c.project_id AND comment_id = c.id
+		               GROUP BY reaction_type
+		           ) summary
+		       ), '[]'::jsonb)
 		FROM comments c
 		JOIN users u ON u.id = c.author_id
 		WHERE c.project_id = $1 AND c.task_id = $2
 		  AND ($3::timestamptz IS NULL OR (c.created_at, c.id) < ($3, $4::uuid))
-		ORDER BY c.created_at DESC, c.id DESC
-		LIMIT $5`, projectID, taskID, cursorTime, cursorID, filter.PageSize)
+			ORDER BY c.created_at DESC, c.id DESC
+			LIMIT $5`, projectID, taskID, cursorTime, cursorID, filter.PageSize, actorID)
 	if err != nil {
 		return nil, fmt.Errorf("list comments: %w", err)
 	}
@@ -294,6 +319,31 @@ func (p *Postgres) ListAssignmentOperations(ctx context.Context, projectID, task
 	for rows.Next() {
 		item, err := scanAssignmentOperation(rows)
 		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (p *Postgres) ListNotifications(ctx context.Context, actorID, projectID string, unreadOnly bool, cursor app.NotificationCursor, limit int) ([]domain.Notification, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, project_id, user_id, task_id, comment_id, actor_id, notification_type, body, read_at, created_at
+		FROM notifications
+		WHERE project_id = $1
+		  AND user_id = $2
+		  AND ($3::bool = false OR read_at IS NULL)
+		  AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))
+		ORDER BY created_at DESC, id DESC
+		LIMIT $6`, projectID, actorID, unreadOnly, nullableTime(cursor.CreatedAt), nullableString(cursor.ID), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list notifications: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.Notification, 0, limit)
+	for rows.Next() {
+		var item domain.Notification
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.UserID, &item.TaskID, &item.CommentID, &item.ActorID, &item.Type, &item.Body, &item.ReadAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -936,14 +986,123 @@ func (s *store) RemoveDependency(ctx context.Context, projectID, taskID, depende
 	return command.RowsAffected() == 1, err
 }
 
+func (s *store) CommentParentExists(ctx context.Context, projectID, taskID, parentID string) (bool, error) {
+	var exists bool
+	err := s.q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM comments
+			WHERE project_id = $1 AND task_id = $2 AND id = $3 AND deleted_at IS NULL
+		)`, projectID, taskID, parentID).Scan(&exists)
+	return exists, err
+}
+
+func (s *store) CommentExists(ctx context.Context, projectID, taskID, commentID string) (bool, error) {
+	var exists bool
+	err := s.q.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM comments
+			WHERE project_id = $1 AND task_id = $2 AND id = $3 AND deleted_at IS NULL
+		)`, projectID, taskID, commentID).Scan(&exists)
+	return exists, err
+}
+
+func (s *store) SetCommentReaction(ctx context.Context, projectID, taskID, commentID, reactionType, actorID string) (domain.CommentReaction, error) {
+	_, err := s.q.Exec(ctx, `
+		INSERT INTO comment_reactions(project_id, comment_id, user_id, reaction_type)
+		VALUES ($1, $3, $5, $4)
+		ON CONFLICT (project_id, comment_id, user_id)
+		DO UPDATE SET reaction_type = EXCLUDED.reaction_type`, projectID, taskID, commentID, reactionType, actorID)
+	if err != nil {
+		return domain.CommentReaction{}, mapConstraintError(err)
+	}
+	return s.commentReaction(ctx, projectID, taskID, commentID, reactionType, true)
+}
+
+func (s *store) RemoveCommentReaction(ctx context.Context, projectID, taskID, commentID, actorID string) (domain.CommentReaction, error) {
+	var reactionType string
+	err := s.q.QueryRow(ctx, `SELECT reaction_type FROM comment_reactions WHERE project_id = $1 AND comment_id = $2 AND user_id = $3`, projectID, commentID, actorID).Scan(&reactionType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		reactionType = "LIKE"
+	} else if err != nil {
+		return domain.CommentReaction{}, err
+	}
+	if _, err := s.q.Exec(ctx, `DELETE FROM comment_reactions WHERE project_id = $1 AND comment_id = $2 AND user_id = $3`, projectID, commentID, actorID); err != nil {
+		return domain.CommentReaction{}, err
+	}
+	return s.commentReaction(ctx, projectID, taskID, commentID, reactionType, false)
+}
+
+func (s *store) commentReaction(ctx context.Context, projectID, taskID, commentID, reactionType string, reacted bool) (domain.CommentReaction, error) {
+	var count int64
+	if reactionType != "" {
+		if err := s.q.QueryRow(ctx, `SELECT count(*) FROM comment_reactions WHERE project_id = $1 AND comment_id = $2 AND reaction_type = $3`, projectID, commentID, reactionType).Scan(&count); err != nil {
+			return domain.CommentReaction{}, err
+		}
+	}
+	return domain.CommentReaction{ProjectID: projectID, TaskID: taskID, CommentID: commentID, ReactionType: reactionType, Count: count, Reacted: reacted}, nil
+}
+
+func (s *store) CreateMentionNotifications(ctx context.Context, projectID, taskID, commentID, actorID, body string) ([]domain.Notification, error) {
+	rows, err := s.q.Query(ctx, `
+		WITH mention_tokens AS (
+			SELECT DISTINCT lower(mention_match[1]) AS handle
+			FROM regexp_matches($5, '@([A-Za-z0-9][A-Za-z0-9._-]*)', 'g') AS mention_match
+		), targets AS (
+			SELECT pm.user_id
+			FROM project_members pm
+			JOIN users u ON u.id = pm.user_id
+			JOIN mention_tokens token ON token.handle = lower(split_part(u.email::text, '@', 1))
+				OR token.handle = lower(split_part(u.display_name, ' ', 1))
+				OR token.handle = lower(regexp_replace(u.display_name, '[^A-Za-z0-9]', '', 'g'))
+			WHERE pm.project_id = $1
+			  AND pm.status = 'ACTIVE'
+			  AND u.status = 'ACTIVE'
+			  AND pm.user_id <> $4
+		)
+		INSERT INTO notifications (id, project_id, user_id, task_id, comment_id, actor_id, notification_type, body)
+		SELECT gen_random_uuid(), $1, targets.user_id, $2, $3, $4, 'MENTION', 'You were mentioned in a comment.'
+		FROM targets
+		ON CONFLICT (project_id, comment_id, user_id, notification_type) DO NOTHING
+		RETURNING id, project_id, user_id, task_id, comment_id, actor_id, notification_type, body, read_at, created_at`, projectID, taskID, commentID, actorID, body)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.Notification, 0)
+	for rows.Next() {
+		var item domain.Notification
+		if err := rows.Scan(&item.ID, &item.ProjectID, &item.UserID, &item.TaskID, &item.CommentID, &item.ActorID, &item.Type, &item.Body, &item.ReadAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *store) MarkNotificationRead(ctx context.Context, projectID, actorID, notificationID string) (domain.Notification, error) {
+	var item domain.Notification
+	err := s.q.QueryRow(ctx, `
+		UPDATE notifications
+		SET read_at = COALESCE(read_at, now())
+		WHERE project_id = $1 AND user_id = $2 AND id = $3
+		RETURNING id, project_id, user_id, task_id, comment_id, actor_id, notification_type, body, read_at, created_at`, projectID, actorID, notificationID).
+		Scan(&item.ID, &item.ProjectID, &item.UserID, &item.TaskID, &item.CommentID, &item.ActorID, &item.Type, &item.Body, &item.ReadAt, &item.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Notification{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
 func (s *store) CreateComment(ctx context.Context, projectID, taskID string, input app.CreateCommentInput, actorID string) (domain.Comment, error) {
 	var comment domain.Comment
 	comment.Author.ID = actorID
 	err := s.q.QueryRow(ctx, `
-		INSERT INTO comments(id, project_id, task_id, author_id, body)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, project_id, task_id, body, version, created_at, updated_at, deleted_at`, input.ID, projectID, taskID, actorID, input.Body).
-		Scan(&comment.ID, &comment.ProjectID, &comment.TaskID, &comment.Body, &comment.Version, &comment.CreatedAt, &comment.UpdatedAt, &comment.DeletedAt)
+		INSERT INTO comments(id, project_id, task_id, parent_id, author_id, body)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, project_id, task_id, parent_id, body, version, created_at, updated_at, deleted_at`, input.ID, projectID, taskID, input.ParentID, actorID, input.Body).
+		Scan(&comment.ID, &comment.ProjectID, &comment.TaskID, &comment.ParentID, &comment.Body, &comment.Version, &comment.CreatedAt, &comment.UpdatedAt, &comment.DeletedAt)
 	if err != nil {
 		return domain.Comment{}, mapConstraintError(err)
 	}
@@ -1083,8 +1242,12 @@ func scanTask(row scanner) (domain.Task, error) {
 
 func scanComment(row scanner) (domain.Comment, error) {
 	var item domain.Comment
-	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.Body, &item.Version, &item.CreatedAt,
-		&item.UpdatedAt, &item.DeletedAt, &item.Author.ID, &item.Author.DisplayName, &item.Author.Email, &item.Author.CreatedAt)
+	var reactions []byte
+	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.ParentID, &item.Body, &item.Version, &item.CreatedAt,
+		&item.UpdatedAt, &item.DeletedAt, &item.Author.ID, &item.Author.DisplayName, &item.Author.Email, &item.Author.CreatedAt, &reactions)
+	if err == nil && len(reactions) > 0 {
+		err = json.Unmarshal(reactions, &item.Reactions)
+	}
 	return item, err
 }
 
@@ -1185,6 +1348,13 @@ func insertAssignmentOperation(ctx context.Context, q querier, projectID, taskID
 
 func nullableString(value string) any {
 	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
 		return nil
 	}
 	return value

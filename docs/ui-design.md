@@ -149,7 +149,7 @@ Header controls:
 - task search;
 - status, priority, assignee, and tag filters;
 - sort control;
-- list/board view toggle only if the board is implemented;
+- list/board view toggle;
 - primary `New task` action.
 
 Task-list columns:
@@ -191,6 +191,9 @@ newest cursor page efficiently and reverses it for display.
 
 Avatar  Author                           10:42 AM
         Comment content...
+        Reply
+        └─ Avatar  Author                10:44 AM
+                  Nested reply...
         Pending / Failed retry state when relevant
 
 Avatar  Author                           10:45 AM
@@ -208,6 +211,8 @@ Required behavior:
 - canonical timestamp replaces the optimistic timestamp;
 - failure leaves the draft recoverable and provides retry/remove actions;
 - replayed and duplicate events do not duplicate comments;
+- every comment exposes a reply action and the composer identifies the parent;
+- replies are optimistically nested and restore both draft and reply target on failure;
 - new remote comments append without shifting older-page cursors;
 - deleted comments render a neutral tombstone if edit/delete is implemented;
 - optional reactions appear as small toggle chips below a comment.
@@ -427,10 +432,6 @@ Avoid global page-blocking spinners after the initial load.
 
 Cut first:
 
-- dark mode;
-- Kanban drag-and-drop;
-- reactions;
-- nested comments;
 - advanced animations;
 - extensive dashboard charts;
 - custom illustration work.

@@ -155,3 +155,12 @@ func ValidateComment(body string) error {
 	}
 	return nil
 }
+
+func ValidCommentReactionType(reactionType string) bool {
+	switch reactionType {
+	case "LIKE", "CELEBRATE", "INSIGHTFUL":
+		return true
+	default:
+		return false
+	}
+}

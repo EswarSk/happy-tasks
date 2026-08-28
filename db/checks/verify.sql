@@ -10,7 +10,7 @@ BEGIN
         VALUES
             ('users'), ('projects'), ('project_members'), ('tasks'),
             ('task_assignees'), ('task_tags'), ('task_dependencies'),
-            ('comments'), ('project_streams'), ('sync_events'),
+            ('comments'), ('comment_reactions'), ('notifications'), ('project_streams'), ('sync_events'),
             ('idempotency_keys')
     ) AS expected(name)
     WHERE to_regclass('public.' || expected.name) IS NULL;
@@ -51,6 +51,22 @@ BEGIN
     EXCEPTION
         WHEN foreign_key_violation THEN NULL;
     END;
+
+    BEGIN
+        INSERT INTO comments (
+            id, project_id, task_id, parent_id, author_id, body
+        ) VALUES (
+            '2fffffff-0000-7000-8000-000000000002',
+            '01000000-0000-7000-8000-000000000001',
+            '10000000-0000-7000-8000-000000000003',
+            '20000000-0000-7000-8000-000000000001',
+            '00000000-0000-7000-8000-000000000001',
+            'This cross-task reply must be rejected.'
+        );
+        RAISE EXCEPTION 'cross-task comment reply unexpectedly succeeded';
+    EXCEPTION
+        WHEN foreign_key_violation THEN NULL;
+    END;
 END
 $$;
 
@@ -64,7 +80,7 @@ SELECT
 SELECT indexname, indexdef
 FROM pg_indexes
 WHERE schemaname = 'public'
-  AND tablename IN ('tasks', 'comments', 'sync_events')
+  AND tablename IN ('tasks', 'comments', 'comment_reactions', 'sync_events')
 ORDER BY tablename, indexname;
 
 EXPLAIN (COSTS OFF)

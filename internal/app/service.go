@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/eswaravegi/happy-task-management/internal/domain"
@@ -669,7 +670,7 @@ func (s *Service) ListComments(ctx context.Context, actorID, projectID, taskID s
 	filter.PageSize = normalizePageSize(filter.PageSize)
 	requested := filter.PageSize
 	filter.PageSize++
-	items, err := s.db.ListComments(ctx, projectID, taskID, filter)
+	items, err := s.db.ListComments(ctx, projectID, taskID, actorID, filter)
 	if err != nil {
 		return domain.Page[domain.Comment]{}, err
 	}
@@ -682,19 +683,119 @@ func (s *Service) ListComments(ctx context.Context, actorID, projectID, taskID s
 	return page, nil
 }
 
+func (s *Service) SetCommentReaction(ctx context.Context, meta MutationMeta, projectID, taskID, commentID, reactionType string) (Mutation[domain.CommentReaction], error) {
+	if !domain.ValidCommentReactionType(reactionType) {
+		return Mutation[domain.CommentReaction]{}, domain.Validation("INVALID_REACTION_TYPE", "Unknown comment reaction type.", nil)
+	}
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.CommentReaction], error) {
+		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		exists, err := store.CommentExists(ctx, projectID, taskID, commentID)
+		if err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		if !exists {
+			return mutationValue[domain.CommentReaction]{}, domain.ErrNotFound
+		}
+		reaction, err := store.SetCommentReaction(ctx, projectID, taskID, commentID, reactionType, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		return mutationValue[domain.CommentReaction]{value: reaction, status: http.StatusOK, event: EventDraft{ProjectID: projectID, Type: "comment.reaction.changed", AggregateType: "comment", AggregateID: commentID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: reaction}}, nil
+	})
+}
+
+func (s *Service) RemoveCommentReaction(ctx context.Context, meta MutationMeta, projectID, taskID, commentID string) (Mutation[domain.CommentReaction], error) {
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.CommentReaction], error) {
+		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		exists, err := store.CommentExists(ctx, projectID, taskID, commentID)
+		if err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		if !exists {
+			return mutationValue[domain.CommentReaction]{}, domain.ErrNotFound
+		}
+		reaction, err := store.RemoveCommentReaction(ctx, projectID, taskID, commentID, meta.ActorID)
+		if err != nil {
+			return mutationValue[domain.CommentReaction]{}, err
+		}
+		return mutationValue[domain.CommentReaction]{value: reaction, status: http.StatusOK, event: EventDraft{ProjectID: projectID, Type: "comment.reaction.changed", AggregateType: "comment", AggregateID: commentID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: reaction}}, nil
+	})
+}
+
 func (s *Service) CreateComment(ctx context.Context, meta MutationMeta, projectID, taskID string, input CreateCommentInput) (Mutation[domain.Comment], error) {
 	if err := domain.ValidateComment(input.Body); err != nil {
 		return Mutation[domain.Comment]{}, err
+	}
+	if input.ParentID != nil && *input.ParentID == input.ID {
+		return Mutation[domain.Comment]{}, domain.Validation("COMMENT_PARENT_INVALID", "A comment cannot reply to itself.", map[string]any{"field": "parentId"})
 	}
 	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Comment], error) {
 		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
 			return mutationValue[domain.Comment]{}, err
 		}
+		if input.ParentID != nil {
+			exists, err := store.CommentParentExists(ctx, projectID, taskID, *input.ParentID)
+			if err != nil {
+				return mutationValue[domain.Comment]{}, err
+			}
+			if !exists {
+				return mutationValue[domain.Comment]{}, domain.Validation("COMMENT_PARENT_NOT_FOUND", "The parent comment does not exist on this task.", map[string]any{"field": "parentId"})
+			}
+		}
 		comment, err := store.CreateComment(ctx, projectID, taskID, input, meta.ActorID)
 		if err != nil {
 			return mutationValue[domain.Comment]{}, err
 		}
-		return mutationValue[domain.Comment]{value: comment, status: http.StatusCreated, event: EventDraft{ProjectID: projectID, Type: "comment.created", AggregateType: "comment", AggregateID: comment.ID, AggregateVersion: &comment.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: comment}}, nil
+		notifications, err := store.CreateMentionNotifications(ctx, projectID, taskID, comment.ID, meta.ActorID, comment.Body)
+		if err != nil {
+			return mutationValue[domain.Comment]{}, err
+		}
+		payload := map[string]any{"comment": comment}
+		if len(notifications) > 0 {
+			payload["notifications"] = notifications
+		}
+		return mutationValue[domain.Comment]{value: comment, status: http.StatusCreated, event: EventDraft{ProjectID: projectID, Type: "comment.created", AggregateType: "comment", AggregateID: comment.ID, AggregateVersion: &comment.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: payload}}, nil
+	})
+}
+
+func (s *Service) ListNotifications(ctx context.Context, actorID, projectID string, unreadOnly bool, cursor *NotificationCursor, pageSize int) (domain.Page[domain.Notification], error) {
+	if _, err := s.db.GetProject(ctx, actorID, projectID); err != nil {
+		return domain.Page[domain.Notification]{}, err
+	}
+	pageSize = normalizePageSize(pageSize)
+	requested := pageSize
+	pageSize++
+	var position NotificationCursor
+	if cursor != nil {
+		position = *cursor
+	}
+	items, err := s.db.ListNotifications(ctx, actorID, projectID, unreadOnly, position, pageSize)
+	if err != nil {
+		return domain.Page[domain.Notification]{}, err
+	}
+	page := domain.Page[domain.Notification]{Items: items}
+	if len(items) > requested {
+		page.Items = items[:requested]
+		last := page.Items[len(page.Items)-1]
+		page.NextCursor = EncodeNotificationCursor(last.CreatedAt, last.ID)
+	}
+	return page, nil
+}
+
+func (s *Service) MarkNotificationRead(ctx context.Context, meta MutationMeta, projectID, notificationID string) (Mutation[domain.Notification], error) {
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Notification], error) {
+		if _, err := store.GetActiveMembership(ctx, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.Notification]{}, err
+		}
+		notification, err := store.MarkNotificationRead(ctx, projectID, meta.ActorID, notificationID)
+		if err != nil {
+			return mutationValue[domain.Notification]{}, err
+		}
+		return mutationValue[domain.Notification]{value: notification, status: http.StatusOK, event: EventDraft{ProjectID: projectID, Type: "notification.read", AggregateType: "notification", AggregateID: notification.ID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: notification}}, nil
 	})
 }
 
@@ -857,6 +958,59 @@ func (s *Service) ListEvents(ctx context.Context, actorID, projectID string, aft
 		return nil, err
 	}
 	return s.ReplayEvents(ctx, projectID, after, limit)
+}
+
+func (s *Service) ListActivity(ctx context.Context, actorID, projectID string, after int64, limit int) (domain.Page[domain.ActivityItem], error) {
+	if _, err := s.db.GetProject(ctx, actorID, projectID); err != nil {
+		return domain.Page[domain.ActivityItem]{}, err
+	}
+	limit = normalizePageSize(limit)
+	events, err := s.db.ListEvents(ctx, projectID, after, limit+1)
+	if err != nil {
+		return domain.Page[domain.ActivityItem]{}, err
+	}
+	page := domain.Page[domain.ActivityItem]{Items: make([]domain.ActivityItem, 0, len(events))}
+	for _, event := range events {
+		page.Items = append(page.Items, domain.ActivityItem{
+			ID: fmt.Sprintf("%s:%d", event.ProjectID, event.Sequence), ProjectID: event.ProjectID, Sequence: event.Sequence,
+			EventType: event.Type, AggregateType: event.AggregateType, AggregateID: event.AggregateID, ActorID: event.ActorID,
+			Description: activityDescription(event.Type), OccurredAt: event.OccurredAt,
+		})
+	}
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+		page.NextCursor = strconv.FormatInt(page.Items[len(page.Items)-1].Sequence, 10)
+	}
+	return page, nil
+}
+
+func activityDescription(eventType string) string {
+	switch eventType {
+	case "project.created":
+		return "created the project"
+	case "task.created":
+		return "created a task"
+	case "task.updated":
+		return "updated a task"
+	case "task.deleted":
+		return "deleted a task"
+	case "comment.created":
+		return "added a comment"
+	case "comment.reaction.changed":
+		return "reacted to a comment"
+	case "dependency.created":
+		return "added a dependency"
+	case "dependency.deleted":
+		return "removed a dependency"
+	case "membership.created":
+		return "added a project member"
+	case "membership.updated":
+		return "updated a project member"
+	case "notification.read":
+		return "read a notification"
+	default:
+		return strings.ReplaceAll(strings.TrimSuffix(eventType, ".changed"), ".", " ")
+	}
 }
 
 // ReplayEvents is used only after the transport has authorized the long-lived

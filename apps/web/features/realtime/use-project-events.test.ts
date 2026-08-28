@@ -49,6 +49,7 @@ describe("project event reconciliation", () => {
       payload: {
         id: "comment-1",
         taskId: task.id,
+        parentId: "parent-comment",
         author: { id: "user-1" },
         body: "Ready for review",
         createdAt: "2026-08-27T00:01:00.000Z",
@@ -58,6 +59,7 @@ describe("project event reconciliation", () => {
 
     expect(queryClient.getQueryData<Task>(["task", projectId, task.id])?.commentCount).toBe(1);
     expect(queryClient.getQueryData<InfiniteData<Page<Comment>>>(["comments", projectId, task.id])?.pages[0]?.items).toHaveLength(1);
+    expect(queryClient.getQueryData<InfiniteData<Page<Comment>>>(["comments", projectId, task.id])?.pages[0]?.items[0]?.parentId).toBe("parent-comment");
     expect(queryClient.getQueryData<InfiniteData<Page<Task>>>(["tasks", projectId])?.pages[0]?.items[0]?.commentCount).toBe(1);
   });
 

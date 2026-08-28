@@ -52,12 +52,19 @@ type AssignmentCursor struct {
 	ID         string
 }
 
+type NotificationCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
 type TaskFilter struct {
-	Status   *domain.Status
-	Priority *domain.Priority
-	Search   string
-	Cursor   *TaskCursor
-	PageSize int
+	Status     *domain.Status
+	Priority   *domain.Priority
+	AssigneeID *string
+	Tag        string
+	Search     string
+	Cursor     *TaskCursor
+	PageSize   int
 }
 
 type CommentFilter struct {
@@ -114,8 +121,9 @@ type UpdateTaskInput struct {
 }
 
 type CreateCommentInput struct {
-	ID   string
-	Body string
+	ID       string
+	ParentID *string
+	Body     string
 }
 
 type CreateMembershipInput struct {
@@ -172,7 +180,13 @@ type Store interface {
 	AddDependency(context.Context, string, string, string, string) error
 	RemoveDependency(context.Context, string, string, string) (bool, error)
 
+	CommentParentExists(context.Context, string, string, string) (bool, error)
+	CommentExists(context.Context, string, string, string) (bool, error)
 	CreateComment(context.Context, string, string, CreateCommentInput, string) (domain.Comment, error)
+	SetCommentReaction(context.Context, string, string, string, string, string) (domain.CommentReaction, error)
+	RemoveCommentReaction(context.Context, string, string, string, string) (domain.CommentReaction, error)
+	CreateMentionNotifications(context.Context, string, string, string, string, string) ([]domain.Notification, error)
+	MarkNotificationRead(context.Context, string, string, string) (domain.Notification, error)
 	AppendEvent(context.Context, EventDraft) (domain.Event, error)
 }
 
@@ -183,9 +197,10 @@ type Database interface {
 	Bootstrap(context.Context, string, string, TaskFilter) (Bootstrap, error)
 	ListTasks(context.Context, string, TaskFilter) ([]domain.Task, error)
 	GetTask(context.Context, string, string) (domain.Task, error)
-	ListComments(context.Context, string, string, CommentFilter) ([]domain.Comment, error)
+	ListComments(context.Context, string, string, string, CommentFilter) ([]domain.Comment, error)
 	ListMembers(context.Context, string, MemberFilter) ([]domain.Membership, error)
 	ListAssignmentOperations(context.Context, string, string, AssignmentFilter) ([]domain.AssignmentOperation, error)
+	ListNotifications(context.Context, string, string, bool, NotificationCursor, int) ([]domain.Notification, error)
 	GetTaskDescriptionDocument(context.Context, string, string) (domain.TaskDescriptionDocument, error)
 	ListEvents(context.Context, string, int64, int) ([]domain.Event, error)
 	ProjectStreamCursor(context.Context, string) (int64, error)

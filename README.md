@@ -10,7 +10,11 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Task creation, editing, deletion, search, status/priority filters, explicit assignee add/remove controls, tags, custom fields, and optimistic UI.
 - Stable user identities, soft membership lifecycle (active/invited/suspended/removed), role enforcement, final-owner protection, paginated member search, and append-only assignment history.
 - Dependency creation/removal with transactional cycle prevention.
-- Append-oriented comments with cursor-ready indexing and near-real-time delivery.
+- Nested comment threads with same-task database constraints, cursor-ready indexing, optimistic rollback, and near-real-time delivery.
+- Comment reactions with one reaction per user/comment, transactional counts, and live reconciliation.
+- Ephemeral project presence, task focus sharing, and live description-selection awareness over bounded WebSocket rooms.
+- @handle comment mentions with durable in-app notifications and real-time unread-count reconciliation.
+- A project activity timeline plus a native drag-and-drop Kanban board that uses the same task rules as the list.
 - Conflict detection through `If-Match` versions and retry-safe writes through idempotency keys.
 - Field-level task operation history with actor-scoped undo/redo; independent stale edits (for example status and priority) merge safely.
 - Yjs CRDT description editing over a task-scoped WebSocket with durable snapshots, replayable updates, and a searchable text projection.
@@ -18,6 +22,7 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
 - Mock mode for isolated UI development and API mode for the integrated product.
 - Reversible migrations, deterministic demo/scale seeds, schema verification, CI, container builds, and a k6 scenario.
+- A recorded 10,000-task load-test baseline in [`docs/load-test-results.md`](docs/load-test-results.md).
 
 ## Quick start
 
@@ -54,6 +59,8 @@ make load          # run the checked-in k6 scenario after the scale seed
 make stack-down    # stop services and retain the database volume
 make db-reset      # reset only the named disposable local database
 ```
+
+The latest local scale baseline is recorded in [`docs/load-test-results.md`](docs/load-test-results.md).
 
 `make db-reset` requires an explicit local-reset guard and never targets an arbitrary database. To remove the retained Compose volume, use `docker compose down --volumes` intentionally.
 
@@ -168,8 +175,9 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 5. Change status and priority from two stale browser views to show field-level merging, then use the detail-header undo/redo controls.
 6. Open the same task in two browser windows and edit its description concurrently to observe Yjs convergence.
 7. Submit a stale same-field version to show the `409` conflict response.
-8. Switch to the seeded scale project to demonstrate cursor loading and virtualization.
+8. Mention `@maya` or `@noah` in a comment and open the notification bell.
+9. Switch to the seeded scale project to demonstrate cursor loading and virtualization.
 
 ## Deliberate boundaries
 
-Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Presence, live cursors, comment reactions, global search, and broker-backed fan-out remain documented extension points. The description CRDT is already isolated behind its WebSocket/document tables, so those additions do not force a rewrite of the core task model.
+Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Global search and broker-backed fan-out remain documented extension points. The description CRDT, ephemeral collaboration room, notifications, reactions, activity projection, and board view are isolated so those additions do not force a rewrite of the core task model.

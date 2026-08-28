@@ -13,9 +13,10 @@ export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInp
   );
 }
 
-export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(function Textarea({ className, ...props }, ref) {
   return (
     <textarea
+      ref={ref}
       className={cn(
         "w-full resize-none rounded-2xl border border-[var(--border)] bg-[var(--panel)] px-4 py-3 text-sm leading-6 text-[var(--text)] shadow-none outline-none placeholder:text-[var(--text-muted)] transition-colors hover:border-[var(--text-muted)] focus:border-[var(--focus)] focus:bg-[var(--panel)] focus:ring-2 focus:ring-[var(--focus-soft)] disabled:opacity-50",
         className,
@@ -23,4 +24,4 @@ export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<H
       {...props}
     />
   );
-}
+});

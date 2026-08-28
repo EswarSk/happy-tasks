@@ -121,19 +121,35 @@ body {
 button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 
+.task-list-container { container-type: inline-size; }
 .task-grid { grid-template-columns: 100px minmax(0, 1fr); gap: 8px; }
-@media (min-width: 640px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr); gap: 12px; } }
-@media (min-width: 768px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px; } }
-@media (min-width: 1024px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px; } }
-@media (min-width: 1280px) { .task-grid { grid-template-columns: 112px minmax(220px, 1fr) 94px 100px 72px 72px; } }
+.task-grid-mobile-priority { display: flex; }
+.task-grid-priority, .task-grid-assignee, .task-grid-signals, .task-grid-updated { display: none; }
+@container (min-width: 540px) {
+  .task-grid { grid-template-columns: 100px minmax(160px, 1fr) 82px; gap: 10px; }
+  .task-grid-priority { display: block; }
+}
+@container (min-width: 720px) {
+  .task-grid { grid-template-columns: 100px minmax(160px, 1fr) 82px 88px 70px; gap: 10px; }
+  .task-grid-assignee, .task-grid-updated { display: block; }
+  .task-grid-assignee { display: flex; }
+}
+@container (min-width: 900px) {
+  .task-grid { grid-template-columns: 100px minmax(180px, 1fr) 82px 92px 72px 72px; gap: 12px; }
+  .task-grid-signals { display: flex; }
+}
+@container (min-width: 540px) { .task-grid-mobile-priority { display: none; } }
 
 .dependency-map-grid { grid-template-columns: minmax(0, 1fr); }
 .dependency-map-connector { min-height: 22px; flex-direction: column; }
 .dependency-map-connector-line { width: 1px; min-height: 10px; flex: 1; }
+.dependency-map-canvas { container-type: inline-size; background-color: var(--surface-muted); background-image: radial-gradient(circle, var(--border) 1px, transparent 1.1px); background-size: 16px 16px; }
+.dependency-map-connector-arrow { transform: rotate(90deg); }
 @container (min-width: 680px) {
   .dependency-map-grid { grid-template-columns: minmax(0, 1fr) 28px minmax(220px, 1.25fr) 28px minmax(0, 1fr); }
   .dependency-map-connector { min-height: 0; flex-direction: row; }
   .dependency-map-connector-line { width: auto; min-height: 0; height: 1px; }
+  .dependency-map-connector-arrow { transform: none; }
 }
 
 .section-label { font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted); }

@@ -28,10 +28,12 @@ type Handler struct {
 	service            *app.Service
 	hub                *syncstream.Hub
 	descriptionHub     *descriptionHub
+	presenceHub        *presenceHub
 	defaultActorID     string
 	allowActorOverride bool
 	allowedOrigins     map[string]struct{}
 	logger             *slog.Logger
+	rateLimiter        *rateLimiter
 }
 
 func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger) http.Handler {
@@ -39,7 +41,7 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 	for _, origin := range allowedOrigins {
 		originSet[strings.TrimSuffix(origin, "/")] = struct{}{}
 	}
-	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger}
+	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter()}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -57,12 +59,17 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 	router.Get("/health/live", h.live)
 	router.Get("/health/ready", h.ready)
 	router.Route("/v1", func(r chi.Router) {
+		r.Use(h.rateLimit)
 		r.Get("/projects", h.listProjects)
 		r.Post("/projects", h.createProject)
 		r.Route("/projects/{projectId}", func(r chi.Router) {
 			r.Get("/", h.getProject)
 			r.Get("/bootstrap", h.bootstrap)
 			r.Get("/events", h.events)
+			r.Get("/collaboration/live", h.collaborationWebSocket)
+			r.Get("/activity", h.activity)
+			r.Get("/notifications", h.notifications)
+			r.Post("/notifications/{notificationId}/read", h.markNotificationRead)
 			r.Get("/members", h.listMembers)
 			r.Post("/members", h.createMembership)
 			r.Patch("/members/{membershipId}", h.updateMembership)
@@ -80,6 +87,8 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 				r.Delete("/dependencies/{dependencyTaskId}", h.removeDependency)
 				r.Get("/comments", h.listComments)
 				r.Post("/comments", h.createComment)
+				r.Put("/comments/{commentId}/reaction", h.setCommentReaction)
+				r.Delete("/comments/{commentId}/reaction", h.removeCommentReaction)
 				r.Get("/assignment-history", h.listAssignmentHistory)
 			})
 		})
@@ -336,6 +345,18 @@ func (h *Handler) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.Priority = &priority
 	}
+	if value := r.URL.Query().Get("assignee"); value != "" {
+		if _, err := uuid.Parse(value); err != nil {
+			h.validationError(w, r, "assignee", "must be a UUID")
+			return
+		}
+		filter.AssigneeID = &value
+	}
+	filter.Tag = strings.TrimSpace(r.URL.Query().Get("tag"))
+	if len(filter.Tag) > 100 {
+		h.validationError(w, r, "tag", "must not exceed 100 characters")
+		return
+	}
 	filter.Search = strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(filter.Search) > 200 {
 		h.validationError(w, r, "q", "must not exceed 200 characters")
@@ -547,8 +568,9 @@ func (h *Handler) createComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		ID   string `json:"id"`
-		Body string `json:"body"`
+		ID       string  `json:"id"`
+		ParentID *string `json:"parentId"`
+		Body     string  `json:"body"`
 	}
 	raw, ok := h.decode(w, r, &request)
 	if !ok {
@@ -561,13 +583,58 @@ func (h *Handler) createComment(w http.ResponseWriter, r *http.Request) {
 		h.validationError(w, r, "id", "must be a UUID")
 		return
 	}
-	result, err := h.service.CreateComment(r.Context(), h.mutationMeta(r, raw), projectID, taskID, app.CreateCommentInput{ID: request.ID, Body: request.Body})
+	if request.ParentID != nil && !validUUID(*request.ParentID) {
+		h.validationError(w, r, "parentId", "must be a UUID")
+		return
+	}
+	result, err := h.service.CreateComment(r.Context(), h.mutationMeta(r, raw), projectID, taskID, app.CreateCommentInput{ID: request.ID, ParentID: request.ParentID, Body: request.Body})
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
 	w.Header().Set("ETag", etag(result.Value.Version))
 	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) setCommentReaction(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	commentID, ok := pathUUID(w, r, "commentId")
+	if !ok {
+		return
+	}
+	var request struct {
+		ReactionType string `json:"type"`
+	}
+	raw, ok := h.decode(w, r, &request)
+	if !ok {
+		return
+	}
+	result, err := h.service.SetCommentReaction(r.Context(), h.mutationMeta(r, raw), projectID, taskID, commentID, strings.ToUpper(strings.TrimSpace(request.ReactionType)))
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) removeCommentReaction(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	commentID, ok := pathUUID(w, r, "commentId")
+	if !ok {
+		return
+	}
+	result, err := h.service.RemoveCommentReaction(r.Context(), h.mutationMeta(r, nil), projectID, taskID, commentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
 }
 
 func (h *Handler) listAssignmentHistory(w http.ResponseWriter, r *http.Request) {
@@ -590,6 +657,67 @@ func (h *Handler) listAssignmentHistory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) activity(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	after, err := eventCursor(r)
+	if err != nil {
+		h.validationError(w, r, "after", "must be a non-negative integer")
+		return
+	}
+	page, err := h.service.ListActivity(r.Context(), h.actorID(r), projectID, after, intQuery(r, "limit", 50))
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	after, err := notificationCursor(r)
+	if err != nil {
+		h.validationError(w, r, "cursor", "invalid cursor")
+		return
+	}
+	unreadOnly := true
+	if value := r.URL.Query().Get("unread"); value != "" {
+		unreadOnly, err = strconv.ParseBool(value)
+		if err != nil {
+			h.validationError(w, r, "unread", "must be true or false")
+			return
+		}
+	}
+	page, err := h.service.ListNotifications(r.Context(), h.actorID(r), projectID, unreadOnly, after, intQuery(r, "limit", 50))
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) markNotificationRead(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	notificationID, ok := pathUUID(w, r, "notificationId")
+	if !ok {
+		return
+	}
+	result, err := h.service.MarkNotificationRead(r.Context(), h.mutationMeta(r, nil), projectID, notificationID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
 }
 
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
@@ -682,6 +810,14 @@ func eventCursor(r *http.Request) (int64, error) {
 	return n, nil
 }
 
+func notificationCursor(r *http.Request) (*app.NotificationCursor, error) {
+	value := r.URL.Query().Get("cursor")
+	if value == "" {
+		return nil, nil
+	}
+	return app.DecodeNotificationCursor(value)
+}
+
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, destination any) ([]byte, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	raw, err := io.ReadAll(r.Body)
@@ -754,6 +890,17 @@ func requestID(ctx context.Context) string {
 	return value
 }
 
+func (h *Handler) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.rateLimiter != nil && !h.rateLimiter.allow(rateLimitKey(r), rateLimitCategory(r), time.Now()) {
+			w.Header().Set("Retry-After", "1")
+			h.writeError(w, r, domain.Validation("RATE_LIMITED", "Too many requests; retry shortly.", nil))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (h *Handler) validationError(w http.ResponseWriter, r *http.Request, field, message string) {
 	h.writeError(w, r, domain.Validation("VALIDATION_ERROR", "One or more request fields are invalid.", map[string]any{"field": field, "message": message}))
 }
@@ -775,6 +922,8 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 			status = http.StatusPreconditionRequired
 		case "DATABASE_UNAVAILABLE":
 			status = http.StatusServiceUnavailable
+		case "RATE_LIMITED":
+			status = http.StatusTooManyRequests
 		case "VALIDATION_ERROR", "INVALID_JSON", "IDEMPOTENCY_KEY_REQUIRED":
 			status = http.StatusBadRequest
 		default:

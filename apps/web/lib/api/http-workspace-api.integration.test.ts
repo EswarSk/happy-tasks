@@ -17,6 +17,7 @@ describe.skipIf(!baseUrl)("HttpWorkspaceApi live contract", () => {
     });
     const dependency = await api.addDependency(project.id, first.id, second.id);
     const comment = await api.createComment(project.id, first.id, "The real Go API accepted this browser-shaped flow.", crypto.randomUUID());
+    const reply = await api.createComment(project.id, first.id, "The threaded reply kept its parent relationship.", crypto.randomUUID(), comment.id);
     const comments = await api.listComments(project.id, first.id);
     const removed = await api.removeDependency(project.id, first.id, second.id);
     const deleted = await api.deleteTask(project.id, first.id, updated.version);
@@ -25,6 +26,7 @@ describe.skipIf(!baseUrl)("HttpWorkspaceApi live contract", () => {
     expect(updated.status).toBe("in_progress");
     expect(dependency.dependsOnTaskId).toBe(second.id);
     expect(comments.items.some((item) => item.id === comment.id)).toBe(true);
+    expect(comments.items.find((item) => item.id === reply.id)?.parentId).toBe(comment.id);
     expect(removed.deleted).toBe(true);
     expect(deleted.deleted).toBe(true);
   }, 15_000);

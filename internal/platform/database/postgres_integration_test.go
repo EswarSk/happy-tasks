@@ -139,6 +139,26 @@ func TestTransactionalFlows(t *testing.T) {
 	if !second.Replayed || first.Value.ID != second.Value.ID {
 		t.Fatal("expected the second comment request to replay")
 	}
+
+	replyID := uuid.Must(uuid.NewV7()).String()
+	reply, err := service.CreateComment(ctx, testMeta("reply:"+replyID), testProject, taskA, app.CreateCommentInput{ID: replyID, ParentID: &commentID, Body: "A nested reply"})
+	if err != nil {
+		t.Fatalf("create reply: %v", err)
+	}
+	if reply.Value.ParentID == nil || *reply.Value.ParentID != commentID {
+		t.Fatalf("reply parent = %v, want %s", reply.Value.ParentID, commentID)
+	}
+	comments, err := service.ListComments(ctx, testActor, testProject, taskA, app.CommentFilter{PageSize: 10})
+	if err != nil {
+		t.Fatalf("list threaded comments: %v", err)
+	}
+	if len(comments.Items) < 2 || comments.Items[0].ID != replyID || comments.Items[0].ParentID == nil || *comments.Items[0].ParentID != commentID {
+		t.Fatalf("threaded comments not returned newest-first: %#v", comments.Items)
+	}
+
+	crossTaskReplyID := uuid.Must(uuid.NewV7()).String()
+	_, err = service.CreateComment(ctx, testMeta("cross-task-reply:"+crossTaskReplyID), testProject, taskB, app.CreateCommentInput{ID: crossTaskReplyID, ParentID: &commentID, Body: "Invalid cross-task reply"})
+	assertDomainCode(t, err, "COMMENT_PARENT_NOT_FOUND")
 }
 
 func testMeta(key string) app.MutationMeta {

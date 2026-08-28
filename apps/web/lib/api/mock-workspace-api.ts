@@ -1,8 +1,12 @@
 import type {
   AssignmentHistoryItem,
+  ActivityItem,
   Comment,
+  CommentReaction,
+  CommentReactionType,
   Member,
   MemberFilters,
+  Notification,
   Page,
   Project,
   Task,
@@ -107,6 +111,9 @@ function makeTasks(project: Project): Task[] {
 interface MockStore {
   tasks: Map<string, Task[]>;
   comments: Map<string, Comment[]>;
+  reactions: Map<string, Map<string, CommentReactionType>>;
+  activity: Map<string, ActivityItem[]>;
+  notifications: Map<string, Notification[]>;
   assignmentHistory: Map<string, AssignmentHistoryItem[]>;
   operations: Map<string, MockTaskOperation[]>;
 }
@@ -126,11 +133,14 @@ declare global {
 
 function store(): MockStore {
   if (!globalThis.__happyTaskMockStore) {
-    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), assignmentHistory: new Map(), operations: new Map() };
+    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), reactions: new Map(), activity: new Map(), notifications: new Map(), assignmentHistory: new Map(), operations: new Map() };
   }
   // Preserve hot-reload compatibility with a store created before assignment history existed.
   globalThis.__happyTaskMockStore.assignmentHistory ??= new Map();
   globalThis.__happyTaskMockStore.operations ??= new Map();
+  globalThis.__happyTaskMockStore.reactions ??= new Map();
+  globalThis.__happyTaskMockStore.activity ??= new Map();
+  globalThis.__happyTaskMockStore.notifications ??= new Map();
   return globalThis.__happyTaskMockStore;
 }
 
@@ -148,11 +158,42 @@ function commentsFor(taskId: string) {
   if (!state.comments.has(taskId)) {
     state.comments.set(taskId, [
       { id: `${taskId}-comment-1`, projectId: projectIds.platform, taskId, authorId: demoMembers[1].id, body: "Replay should begin after the bootstrap cursor so there is no lost-update window.", createdAt: "2026-08-26T18:20:00Z", version: 1 },
-      { id: `${taskId}-comment-2`, projectId: projectIds.platform, taskId, authorId: demoMembers[2].id, body: "I added a focused two-client scenario to the acceptance notes. This should be great to demo live.", createdAt: "2026-08-26T19:05:00Z", version: 1 },
-      { id: `${taskId}-comment-3`, projectId: projectIds.platform, taskId, authorId: demoMembers[0].id, body: "Perfect. Let’s also show the event payload in DevTools so reviewers can see it stays compact.", createdAt: "2026-08-26T20:32:00Z", version: 1 },
+      { id: `${taskId}-comment-2`, projectId: projectIds.platform, taskId, parentId: `${taskId}-comment-1`, authorId: demoMembers[2].id, body: "I added a focused two-client scenario to the acceptance notes. This should be great to demo live.", createdAt: "2026-08-26T19:05:00Z", version: 1 },
+      { id: `${taskId}-comment-3`, projectId: projectIds.platform, taskId, parentId: `${taskId}-comment-2`, authorId: demoMembers[0].id, body: "Perfect. Let’s also show the event payload in DevTools so reviewers can see it stays compact.", createdAt: "2026-08-26T20:32:00Z", version: 1 },
     ]);
   }
   return state.comments.get(taskId)!;
+}
+
+function recordActivity(projectId: string, eventType: string, description: string, aggregateId: string) {
+  const items = store().activity.get(projectId) ?? [];
+  items.unshift({ id: crypto.randomUUID(), projectId, sequence: items.length + 1, eventType, aggregateType: eventType.split(".")[0] ?? "task", aggregateId, actorId: demoMembers[0].id, description, occurredAt: new Date().toISOString() });
+  store().activity.set(projectId, items.slice(0, 100));
+}
+
+function recordMentionNotifications(projectId: string, taskId: string, commentId: string, actorId: string, body: string) {
+  const handles = new Set([...body.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)].map((match) => match[1].toLowerCase()));
+  const now = new Date().toISOString();
+  const notifications = [...(store().notifications.get(projectId) ?? [])];
+  for (const member of demoMembers) {
+    const handle = member.email.split("@")[0].toLowerCase();
+    if (member.id === actorId || !handles.has(handle)) continue;
+    notifications.unshift({ id: crypto.randomUUID(), projectId, userId: member.id, taskId, commentId, actorId, type: "MENTION", body: "You were mentioned in a comment.", createdAt: now });
+  }
+  store().notifications.set(projectId, notifications.slice(0, 100));
+}
+
+function reactionsFor(commentId: string) {
+  const reactions = store().reactions.get(commentId) ?? new Map<string, CommentReactionType>();
+  store().reactions.set(commentId, reactions);
+  return reactions;
+}
+
+function reactionSummary(projectId: string, taskId: string, commentId: string): CommentReaction[] {
+  const reactions = reactionsFor(commentId);
+  return (["like", "celebrate", "insightful"] as CommentReactionType[])
+    .filter((type) => [...reactions.values()].some((value) => value === type))
+    .map((type) => ({ projectId, taskId, commentId, type, count: [...reactions.values()].filter((value) => value === type).length, reacted: reactions.get(demoMembers[0].id) === type }));
 }
 
 function assignmentHistoryFor(projectId: string, taskId: string) {
@@ -202,6 +243,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     };
     projects.unshift(project);
     store().tasks.set(project.id, []);
+    recordActivity(project.id, "project.created", "created the project", project.id);
     return structuredClone(project);
   }
 
@@ -237,6 +279,8 @@ export class MockWorkspaceApi implements WorkspaceApi {
       if (search && !`${task.key} ${task.title} ${task.tags.join(" ")}`.toLowerCase().includes(search)) return false;
       if (filters.status && filters.status !== "all" && task.status !== filters.status) return false;
       if (filters.priority && filters.priority !== "all" && task.priority !== filters.priority) return false;
+      if (filters.assigneeId && !task.assigneeIds.includes(filters.assigneeId)) return false;
+      if (filters.tag && !task.tags.some((item) => item.toLowerCase().includes(filters.tag!.trim().toLowerCase()))) return false;
       return true;
     });
     const offset = offsetFromCursor(filters.cursor);
@@ -277,6 +321,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
       version: 1,
     };
     list.unshift(task);
+    recordActivity(projectId, "task.created", "created a task", task.id);
     return structuredClone(task);
   }
 
@@ -306,6 +351,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     if (input.tags !== undefined) task.tags = [...input.tags];
     task.version += 1;
     task.updatedAt = new Date().toISOString();
+    recordActivity(projectId, "task.updated", "updated a task", task.id);
     for (const field of fields) {
       const key = field as keyof Task;
       after[key] = structuredClone(task[key]) as never;
@@ -361,6 +407,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     task.version += 1;
     task.updatedAt = new Date().toISOString();
     operation.state = to;
+    recordActivity(projectId, "task.updated", to === "UNDONE" ? "undid a task edit" : "redid a task edit", task.id);
     return structuredClone(task);
   }
 
@@ -376,6 +423,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     list.splice(index, 1);
     store().comments.delete(taskId);
     store().assignmentHistory.delete(taskId);
+    recordActivity(projectId, "task.deleted", "deleted a task", taskId);
     return { id: taskId, deleted: true as const, version: expectedVersion + 1 };
   }
 
@@ -386,21 +434,47 @@ export class MockWorkspaceApi implements WorkspaceApi {
     const pageSize = 50;
     const page = items.slice(offset, offset + pageSize);
     const nextCursor = offset + pageSize < items.length ? String(offset + pageSize) : null;
-    return { items: structuredClone(page), nextCursor, totalCount: page.length };
+    return { items: structuredClone(page.map((comment) => ({ ...comment, reactions: reactionSummary(projectId, taskId, comment.id) }))), nextCursor, totalCount: page.length };
   }
 
-  async createComment(projectId: string, taskId: string, body: string, clientId: string) {
+  async createComment(projectId: string, taskId: string, body: string, clientId: string, parentId?: string) {
     await delay(620);
     if (body.toLowerCase().includes("/fail")) {
       throw new WorkspaceApiError(503, { code: "DEMO_FAILURE", message: "Demo failure triggered. Your comment is preserved for retry." });
     }
     const existing = commentsFor(taskId).find((comment) => comment.id === clientId);
     if (existing) return structuredClone(existing);
-    const comment: Comment = { id: clientId, projectId, taskId, authorId: demoMembers[0].id, body, createdAt: new Date().toISOString(), version: 1 };
+    if (parentId && !commentsFor(taskId).some((comment) => comment.id === parentId)) {
+      throw new WorkspaceApiError(422, { code: "COMMENT_PARENT_NOT_FOUND", message: "The parent comment does not exist on this task." });
+    }
+    const comment: Comment = { id: clientId, projectId, taskId, ...(parentId ? { parentId } : {}), authorId: demoMembers[0].id, body, createdAt: new Date().toISOString(), version: 1 };
     commentsFor(taskId).push(comment);
     const task = tasksFor(projectId).find((item) => item.id === taskId);
     if (task) task.commentCount += 1;
+    recordActivity(projectId, "comment.created", "added a comment", comment.id);
+    recordMentionNotifications(projectId, taskId, comment.id, demoMembers[0].id, body);
     return structuredClone(comment);
+  }
+
+  async setCommentReaction(projectId: string, taskId: string, commentId: string, type: CommentReactionType) {
+    await delay(180);
+    if (!commentsFor(taskId).some((comment) => comment.id === commentId)) throw new WorkspaceApiError(404, { code: "NOT_FOUND", message: "The comment was not found." });
+    reactionsFor(commentId).set(demoMembers[0].id, type);
+    const summary = reactionSummary(projectId, taskId, commentId).find((item) => item.type === type)!;
+    recordActivity(projectId, "comment.reaction.changed", "reacted to a comment", commentId);
+    return structuredClone(summary);
+  }
+
+  async removeCommentReaction(projectId: string, taskId: string, commentId: string) {
+    await delay(180);
+    if (!commentsFor(taskId).some((comment) => comment.id === commentId)) throw new WorkspaceApiError(404, { code: "NOT_FOUND", message: "The comment was not found." });
+    const reactions = reactionsFor(commentId);
+    const previous = reactions.get(demoMembers[0].id);
+    reactions.delete(demoMembers[0].id);
+    const summary = previous ? reactionSummary(projectId, taskId, commentId).find((item) => item.type === previous) : undefined;
+    const result: CommentReaction = summary ?? { projectId, taskId, commentId, type: previous ?? "like", count: 0, reacted: false };
+    recordActivity(projectId, "comment.reaction.changed", "removed a comment reaction", commentId);
+    return result;
   }
 
   async addDependency(projectId: string, taskId: string, dependencyTaskId: string) {
@@ -412,6 +486,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     }
     if (!task.dependencyIds.includes(dependencyTaskId)) task.dependencyIds.push(dependencyTaskId);
     task.version += 1;
+    recordActivity(projectId, "dependency.created", "added a dependency", taskId);
     return { taskId, dependsOnTaskId: dependencyTaskId };
   }
 
@@ -421,6 +496,7 @@ export class MockWorkspaceApi implements WorkspaceApi {
     if (!task) throw new WorkspaceApiError(404, { code: "TASK_NOT_FOUND", message: "Task not found." });
     task.dependencyIds = task.dependencyIds.filter((id) => id !== dependencyTaskId);
     task.version += 1;
+    recordActivity(projectId, "dependency.deleted", "removed a dependency", taskId);
     return { taskId, dependsOnTaskId: dependencyTaskId, deleted: true };
   }
 
@@ -435,5 +511,38 @@ export class MockWorkspaceApi implements WorkspaceApi {
       nextCursor: offset + pageSize < items.length ? String(offset + pageSize) : null,
       totalCount: items.length,
     };
+  }
+
+  async listActivity(projectId: string, after?: string): Promise<Page<ActivityItem>> {
+    await delay(120);
+    const items = store().activity.get(projectId) ?? [
+      { id: `${projectId}:3`, projectId, sequence: 3, eventType: "task.updated", aggregateType: "task", aggregateId: demoTaskId, actorId: demoMembers[1].id, description: "updated a task", occurredAt: "2026-08-26T21:42:00Z" },
+      { id: `${projectId}:2`, projectId, sequence: 2, eventType: "comment.created", aggregateType: "comment", aggregateId: `${demoTaskId}-comment-1`, actorId: demoMembers[2].id, description: "added a comment", occurredAt: "2026-08-26T20:32:00Z" },
+      { id: `${projectId}:1`, projectId, sequence: 1, eventType: "task.created", aggregateType: "task", aggregateId: demoTaskId, actorId: demoMembers[0].id, description: "created a task", occurredAt: "2026-08-26T18:20:00Z" },
+    ];
+    if (!store().activity.has(projectId)) store().activity.set(projectId, items);
+    const minimum = Number(after ?? "0");
+    const page = items.filter((item) => item.sequence > minimum).slice(0, 50);
+    return { items: structuredClone(page), nextCursor: page.length === 50 ? String(page.at(-1)?.sequence ?? minimum) : null, totalCount: page.length };
+  }
+
+  async listNotifications(projectId: string, unreadOnly = true, cursor?: string): Promise<Page<Notification>> {
+    await delay(120);
+    const seeded: Notification[] = projectId === demoProjectId ? [{ id: `${projectId}-notification-1`, projectId, userId: demoMembers[0].id, taskId: demoTaskId, commentId: `${demoTaskId}-comment-1`, actorId: demoMembers[1].id, type: "MENTION", body: "You were mentioned in a comment.", createdAt: "2026-08-26T20:32:00Z" }] : [];
+    const items = store().notifications.get(projectId) ?? [];
+    if (projectId === demoProjectId && items.length === 0) items.push(...seeded);
+    if (!store().notifications.has(projectId) || seeded.length > 0 && items.length > 0) store().notifications.set(projectId, items);
+    const offset = Number(cursor ?? 0);
+    const filtered = unreadOnly ? items.filter((item) => !item.readAt) : items;
+    const page = filtered.slice(offset, offset + 50);
+    return { items: structuredClone(page), nextCursor: offset + 50 < filtered.length ? String(offset + 50) : null, totalCount: filtered.length };
+  }
+
+  async markNotificationRead(projectId: string, notificationId: string) {
+    await delay(100);
+    const notification = store().notifications.get(projectId)?.find((item) => item.id === notificationId);
+    if (!notification) throw new WorkspaceApiError(404, { code: "NOTIFICATION_NOT_FOUND", message: "Notification not found." });
+    notification.readAt = new Date().toISOString();
+    return structuredClone(notification);
   }
 }

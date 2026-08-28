@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Boxes, ChevronDown, ChevronsLeft, ListTodo, Plus, Search, Settings2, Star, UserRound } from "lucide-react";
+import { Activity, Boxes, ChevronDown, ChevronsLeft, ListTodo, Plus, Search, Settings2, Star, UserRound } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -39,6 +39,7 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
     },
     enabled: searchOpen && globalSearchTerm.length > 1 && Boolean(projectsQuery.data?.length),
   });
+  const currentProjectId = pathname.match(/\/projects\/([^/]+)/)?.[1];
 
   useEffect(() => {
     const timer = window.setTimeout(() => setGlobalSearchTerm(globalSearch.trim()), 240);
@@ -111,6 +112,7 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
         <div className="my-5 border-t border-[var(--border)]" />
         {!isCollapsed && <div className="mb-2 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Workspace</div>}
         <button type="button" className={cn("flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openGlobalSearch} title={isCollapsed ? "Search all tasks" : undefined} aria-label="Search all tasks"><Search className="size-4" />{!isCollapsed && "Search all tasks"}</button>
+        {currentProjectId && <Link href={`/projects/${currentProjectId}/activity`} onClick={onClose} aria-current={pathname.endsWith("/activity") ? "page" : undefined} title={isCollapsed ? "Activity" : undefined} className={cn("mt-1 flex min-h-9 items-center rounded-md text-sm font-medium outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3", pathname.endsWith("/activity") ? "bg-[var(--selected)] text-[var(--text)]" : "text-[var(--text-secondary)]")}><Activity className="size-4" />{!isCollapsed && "Activity"}</Link>}
         <button type="button" className={cn("mt-1 flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openWorkspaceSettings} title={isCollapsed ? "Workspace settings" : undefined} aria-label="Workspace settings"><Settings2 className="size-4" />{!isCollapsed && "Workspace settings"}</button>
         {!isCollapsed && <div className="mb-2 mt-5 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Views</div>}
         <button type="button" disabled title="All tasks view — coming soon" aria-label="All tasks view — coming soon" className={cn("flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><ListTodo className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">All tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>

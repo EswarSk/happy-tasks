@@ -267,6 +267,7 @@ CREATE TABLE comments (
     id          uuid PRIMARY KEY,
     project_id  uuid        NOT NULL,
     task_id     uuid        NOT NULL,
+    parent_id   uuid,
     author_id   uuid        NOT NULL,
     body        text        NOT NULL CHECK (length(body) BETWEEN 1 AND 10000),
     version     bigint      NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -275,10 +276,13 @@ CREATE TABLE comments (
     deleted_at  timestamptz,
     deleted_by  uuid,
     UNIQUE (project_id, id),
+    UNIQUE (project_id, task_id, id),
     FOREIGN KEY (project_id, task_id)
         REFERENCES tasks(project_id, id) ON DELETE CASCADE,
     FOREIGN KEY (project_id, author_id)
         REFERENCES project_members(project_id, user_id),
+    FOREIGN KEY (project_id, task_id, parent_id)
+        REFERENCES comments(project_id, task_id, id),
     FOREIGN KEY (deleted_by)
         REFERENCES users(id),
     CHECK (
@@ -299,10 +303,11 @@ Important choices:
 - Deleting the containing task may hard-delete comments through the foreign key,
   because the whole aggregate has been intentionally removed. The task deletion
   event is the client tombstone.
-- The initial product has a flat chronological thread. Do not add nested replies
-  merely because the word "thread" is used. A `parent_comment_id` can be added
-  later with a same-task composite foreign key if product requirements demand
-  replies.
+- `parent_id` implements nested replies. Its composite foreign key guarantees
+  that a reply cannot attach to a comment from another project or task.
+- Parent references are immutable. Because a reply can only target an existing
+  comment, cycles cannot be introduced; soft deletion retains the parent row so
+  descendants keep their place.
 
 ### 6.2 Ordering and cursor pagination
 
@@ -656,7 +661,7 @@ multi-row mutations, and comment/event atomicity.
 
 Implement:
 
-- flat comments;
+- nested comment threads with same-task parent enforcement;
 - create and paginated list;
 - optimistic creation with rollback;
 - server timestamps and stable cursor ordering;
@@ -673,7 +678,6 @@ Implement only if core work is complete:
 
 Design but do not implement:
 
-- nested replies;
 - Redis comment-page cache;
 - asynchronous or striped reaction counters;
 - broker fan-out;

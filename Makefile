@@ -11,8 +11,8 @@ DB_CONTAINER_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@db:5432/$(P
 .DEFAULT_GOAL := help
 
 .PHONY: help stack-up stack-down db-up db-down db-reset migrate-up migrate-down \
-	migrate-status seed-demo seed-scale seed-scenarios db-verify dev test test-backend test-web \
-	lint build build-backend build-web load logs
+	migrate-status seed-demo seed-scale seed-scenarios db-verify dev test test-backend test-web test-e2e \
+	lint build build-backend build-web load logs generate-contracts
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -64,6 +64,9 @@ test-backend: ## Run Go tests in the pinned build image
 test-web: ## Run frontend tests when present
 	npm --prefix apps/web run test --if-present
 
+test-e2e: ## Run the focused browser smoke tests
+	npm --prefix apps/web run test:e2e
+
 lint: ## Run Go vet and frontend lint/type checks
 	docker run --rm -v "$(CURDIR):/src" -w /src golang:1.23-alpine go vet ./cmd/... ./internal/...
 	npm --prefix apps/web run lint
@@ -79,6 +82,9 @@ build-web: ## Build the Next.js container
 
 load: seed-scale ## Run the checked-in k6 task-list scenario
 	$(COMPOSE) run --rm load
+
+generate-contracts: ## Generate Go and TypeScript types from OpenAPI
+	./scripts/generate-api-contracts.sh
 
 logs: ## Follow application and database logs
 	$(COMPOSE) logs -f db api web

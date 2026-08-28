@@ -152,15 +152,51 @@ type TaskDescriptionDocument struct {
 }
 
 type Comment struct {
+	ID        string            `json:"id"`
+	ProjectID string            `json:"projectId"`
+	TaskID    string            `json:"taskId"`
+	ParentID  *string           `json:"parentId,omitempty"`
+	Author    User              `json:"author"`
+	Body      string            `json:"body"`
+	Version   int64             `json:"version"`
+	CreatedAt time.Time         `json:"createdAt"`
+	UpdatedAt *time.Time        `json:"updatedAt,omitempty"`
+	DeletedAt *time.Time        `json:"deletedAt,omitempty"`
+	Reactions []CommentReaction `json:"reactions,omitempty"`
+}
+
+type CommentReaction struct {
+	ProjectID    string `json:"projectId"`
+	TaskID       string `json:"taskId"`
+	CommentID    string `json:"commentId"`
+	ReactionType string `json:"type"`
+	Count        int64  `json:"count"`
+	Reacted      bool   `json:"reacted"`
+}
+
+type ActivityItem struct {
+	ID            string    `json:"id"`
+	ProjectID     string    `json:"projectId"`
+	Sequence      int64     `json:"sequence"`
+	EventType     string    `json:"eventType"`
+	AggregateType string    `json:"aggregateType"`
+	AggregateID   string    `json:"aggregateId"`
+	ActorID       string    `json:"actorId,omitempty"`
+	Description   string    `json:"description"`
+	OccurredAt    time.Time `json:"occurredAt"`
+}
+
+type Notification struct {
 	ID        string     `json:"id"`
 	ProjectID string     `json:"projectId"`
+	UserID    string     `json:"userId"`
 	TaskID    string     `json:"taskId"`
-	Author    User       `json:"author"`
+	CommentID string     `json:"commentId"`
+	ActorID   string     `json:"actorId"`
+	Type      string     `json:"type"`
 	Body      string     `json:"body"`
-	Version   int64      `json:"version"`
+	ReadAt    *time.Time `json:"readAt,omitempty"`
 	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
-	DeletedAt *time.Time `json:"deletedAt,omitempty"`
 }
 
 type Event struct {

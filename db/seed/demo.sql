@@ -144,12 +144,13 @@ INSERT INTO task_dependencies (
 ON CONFLICT (task_id, depends_on_task_id) DO NOTHING;
 
 INSERT INTO comments (
-    id, project_id, task_id, author_id, body, version, created_at
+    id, project_id, task_id, parent_id, author_id, body, version, created_at
 ) VALUES
     (
         '20000000-0000-7000-8000-000000000001',
         '01000000-0000-7000-8000-000000000001',
         '10000000-0000-7000-8000-000000000002',
+        NULL,
         '00000000-0000-7000-8000-000000000002',
         'Replay should begin after the bootstrap cursor so no update falls into a gap.',
         1, '2026-08-25T14:00:00Z'
@@ -158,6 +159,7 @@ INSERT INTO comments (
         '20000000-0000-7000-8000-000000000002',
         '01000000-0000-7000-8000-000000000001',
         '10000000-0000-7000-8000-000000000002',
+        '20000000-0000-7000-8000-000000000001',
         '00000000-0000-7000-8000-000000000001',
         'Agreed. Notifications are wake-up hints; durable rows remain authoritative.',
         1, '2026-08-25T14:05:00Z'
@@ -166,10 +168,35 @@ INSERT INTO comments (
         '20000000-0000-7000-8000-000000000003',
         '01000000-0000-7000-8000-000000000001',
         '10000000-0000-7000-8000-000000000003',
+        NULL,
         '00000000-0000-7000-8000-000000000003',
         'The list stays smooth with 10,000 seeded tasks on my machine.',
         1, '2026-08-25T15:20:00Z'
+    ),
+    (
+        '20000000-0000-7000-8000-000000000004',
+        '01000000-0000-7000-8000-000000000001',
+        '10000000-0000-7000-8000-000000000003',
+        '20000000-0000-7000-8000-000000000003',
+        '00000000-0000-7000-8000-000000000001',
+        'That is excellent. I will capture the query plan and frame timing in the demo notes.',
+        1, '2026-08-25T15:24:00Z'
     )
+ON CONFLICT (id) DO UPDATE
+SET parent_id = EXCLUDED.parent_id;
+
+INSERT INTO notifications (
+    id, project_id, user_id, task_id, comment_id, actor_id,
+    notification_type, body, created_at
+) VALUES (
+    '40000000-0000-7000-8000-000000000001',
+    '01000000-0000-7000-8000-000000000001',
+    '00000000-0000-7000-8000-000000000001',
+    '10000000-0000-7000-8000-000000000002',
+    '20000000-0000-7000-8000-000000000001',
+    '00000000-0000-7000-8000-000000000002',
+    'MENTION', 'You were mentioned in a comment.', '2026-08-25T14:00:00Z'
+)
 ON CONFLICT (id) DO NOTHING;
 
 UPDATE tasks AS task

@@ -39,17 +39,17 @@ const TaskRow = memo(function TaskRow({ task, members, selected, onOpen }: { tas
             <span className="shrink-0 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{task.key}</span>
             <span className="truncate text-sm font-medium text-[var(--text)]">{task.title}</span>
           </div>
-          <div className="mt-1 flex gap-1.5 md:hidden"><PriorityBadge priority={task.priority} /><span className="text-xs text-[var(--text-muted)]">{relativeTime(task.updatedAt)}</span></div>
+          <div className="task-grid-mobile-priority mt-1 flex gap-1.5"><PriorityBadge priority={task.priority} /><span className="text-xs text-[var(--text-muted)]">{relativeTime(task.updatedAt)}</span></div>
         </div>
-        <div className="hidden md:block"><PriorityBadge priority={task.priority} /></div>
-        <div className="hidden -space-x-1.5 lg:flex">
+        <div className="task-grid-priority"><PriorityBadge priority={task.priority} /></div>
+        <div className="task-grid-assignee -space-x-1.5">
           {assignees.length ? assignees.slice(0, 3).map((member) => <Avatar key={member.id} name={member.displayName} color={member.color} className="size-6" />) : <span className="text-xs text-[var(--text-muted)]">Unassigned</span>}
         </div>
-        <div className="hidden items-center gap-3 text-xs text-[var(--text-muted)] xl:flex">
+        <div className="task-grid-signals items-center gap-3 text-xs text-[var(--text-muted)]">
           {(task.dependencyIds.length > 0 || task.blockingCount > 0) && <span className="inline-flex items-center gap-1"><Link2 className="size-3.5" />{task.dependencyIds.length + task.blockingCount}</span>}
           <span className="inline-flex items-center gap-1"><MessageCircle className="size-3.5" />{task.commentCount}</span>
         </div>
-        <span className="hidden text-right text-xs text-[var(--text-muted)] lg:block">{relativeTime(task.updatedAt)}</span>
+        <span className="task-grid-updated text-right text-xs text-[var(--text-muted)]">{relativeTime(task.updatedAt)}</span>
       </button>
       <button type="button" aria-label={`Copy task key ${task.key}`} title="Copy task key" onClick={(event) => { event.stopPropagation(); void navigator.clipboard?.writeText(task.key); toast.success("Task key copied"); }} className="absolute top-1/2 right-3 z-10 hidden size-7 -translate-y-1/2 place-items-center rounded-md border border-[var(--border)] bg-[var(--panel)] text-[var(--text-muted)] shadow-sm hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:grid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] group-hover:grid"><Copy className="size-3.5" /></button>
     </div>
@@ -59,7 +59,7 @@ const TaskRow = memo(function TaskRow({ task, members, selected, onOpen }: { tas
 export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTask }: TaskListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const query = useInfiniteQuery({
-    queryKey: ["tasks", projectId, filters.search ?? "", filters.status ?? "all", filters.priority ?? "all"],
+    queryKey: ["tasks", projectId, filters.search ?? "", filters.status ?? "all", filters.priority ?? "all", filters.assigneeId ?? "all", filters.tag ?? ""],
     initialPageParam: "",
     queryFn: ({ pageParam }) => workspaceApi.listTasks(projectId, { ...filters, cursor: pageParam || undefined, limit: 100 }),
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
@@ -69,7 +69,9 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
   const hasActiveFilters = Boolean(
     filters.search?.trim()
       || (filters.status && filters.status !== "all")
-      || (filters.priority && filters.priority !== "all"),
+      || (filters.priority && filters.priority !== "all")
+      || filters.assigneeId
+      || filters.tag?.trim(),
   );
   // TanStack Virtual intentionally returns imperative functions tied to scroll state.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -95,9 +97,9 @@ export function TaskList({ projectId, filters, members, selectedTaskId, onOpenTa
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="task-grid hidden h-10 shrink-0 items-center border-b border-[var(--border)] bg-[var(--panel)] px-5 text-[10px] font-semibold tracking-[.06em] text-[var(--text-muted)] uppercase md:grid">
-        <span>Status</span><span>Task</span><span>Priority</span><span className="hidden lg:block">Assignee</span><span className="hidden xl:block">Signals</span><span className="hidden text-right lg:block">Updated</span>
+    <div className="task-list-container flex h-full min-h-0 flex-col">
+      <div className="task-grid hidden h-10 shrink-0 items-center border-b border-[var(--border)] bg-[var(--panel)] px-5 pr-12 text-[10px] font-semibold tracking-[.06em] text-[var(--text-muted)] uppercase md:grid">
+        <span>Status</span><span>Task</span><span className="task-grid-priority">Priority</span><span className="task-grid-assignee">Assignee</span><span className="task-grid-signals">Signals</span><span className="task-grid-updated text-right">Updated</span>
       </div>
       <div ref={parentRef} className="min-h-0 flex-1 overflow-auto contain-strict" aria-label={`${totalCount.toLocaleString()} tasks`}>
         <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>

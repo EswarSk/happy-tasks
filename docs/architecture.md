@@ -40,14 +40,15 @@ The two-day build targets the highest-signal portions of:
 
 - **Performance and scale:** cursor pagination, virtualized rendering, indexes, a 10,000-task seed, and a repeatable load test.
 - **Developer experience:** tests, CI, OpenAPI, generated contract types, migrations, seed data, Docker, and a clean README.
-- **Advanced collaboration, limited scope:** actor-scoped metadata undo/redo plus a Yjs description document; presence and richer collaboration remain extension points.
+- **Advanced collaboration:** actor-scoped metadata undo/redo, a Yjs description document, project presence, live task focus/selection, activity, and @mention notifications.
+- **Open-ended extension:** dependency graph visualization and a native drag-and-drop Kanban board.
 
 ### 2.3 Bonus-point mapping
 
 | Bonus | Two-day implementation | Later extension |
 | --- | --- | --- |
 | Undo/redo | Actor-scoped field-level inverse operations for task metadata | General command history for deletes/dependencies |
-| OT/CRDT-inspired collaboration | Yjs-backed description document over a separate WebSocket channel | Awareness/presence and richer block editing |
+| OT/CRDT-inspired collaboration | Yjs-backed description document over a separate WebSocket channel | Rich block editing |
 | Event-based backend | Durable append-only `sync_events` stream | Relay events to NATS/Kafka |
 | Clear domain model | Explicit Go domain services and database constraints | Extract only when scale requires it |
 | Type-safe API contract | OpenAPI as source of truth; generated Go and TypeScript types | Versioned public API SDKs |
@@ -76,7 +77,7 @@ The implementation does not call ordinary version-conflict handling a CRDT. CRDT
 - Production authentication, billing, organization administration, or granular RBAC.
 - General offline-first behavior.
 - General-purpose event sourcing. Current relational rows remain authoritative.
-- Live cursors, presence, and a general-purpose rich-text/block CRDT beyond the description document.
+- General-purpose rich-text/block CRDT beyond the description document.
 - Microservices, Kubernetes, Kafka, Redis, or multi-region active-active writes.
 - Full-text search, arbitrary workflow builders, Gantt charts, and external integrations.
 - Perfect fairness for a single project with extreme write contention.
@@ -334,16 +335,22 @@ Including `project_id` in both foreign keys makes cross-project edges impossible
 id uuid primary key
 project_id uuid not null
 task_id uuid not null
+parent_id uuid
 content text not null
 author_id uuid not null references users(id)
 created_at timestamptz not null
 updated_at timestamptz
 version bigint not null default 1
 unique (project_id, id)
+unique (project_id, task_id, id)
 foreign key (project_id, task_id) references tasks(project_id, id) on delete cascade
+foreign key (project_id, task_id, parent_id) references comments(project_id, task_id, id)
 ```
 
-The initial UI supports add/list only. The schema leaves room for edit without changing identifiers.
+The UI supports nested add/list threads. The composite self-reference keeps
+replies on the same task, while immutable parent links prevent cycles. The
+schema leaves room for edit and soft deletion without changing identifiers or
+breaking descendant placement.
 
 ### 6.2 Synchronization and retry tables
 
@@ -701,13 +708,7 @@ Per-instance limits are explicitly documented as approximate under horizontal sc
 
 ### 12.5 Performance proof
 
-Seed one project with 10,000 tasks, realistic tags/assignees, dependencies, and comments. A checked-in k6 script measures:
-
-- task-list p50/p95 latency;
-- mutation p50/p95 latency;
-- error rate under concurrent reads/writes;
-- SSE propagation latency using paired clients;
-- response and event payload sizes.
+Seed one project with 10,000 tasks, realistic tags/assignees, dependencies, and comments. The checked-in k6 script measures task-list p50/p95 latency, read error rate, and compact response size. Mutation, SSE, and collaboration behavior are covered by the integration and browser checks.
 
 Targets on the documented development machine, not universal promises:
 
@@ -718,7 +719,7 @@ Targets on the documented development machine, not universal promises:
 - no project-sized response after an individual mutation;
 - smooth list interaction because only visible rows render.
 
-Record the machine, seed size, command, concurrency, and raw summary. If a target is missed, report the result and bottleneck honestly.
+Record the machine, seed size, command, concurrency, and raw summary in [`docs/load-test-results.md`](load-test-results.md). If a target is missed, report the result and bottleneck honestly.
 
 ## 13. Reliability and failure handling
 
@@ -852,7 +853,7 @@ In production, route `/api` and `/events` through the same TLS origin to avoid C
 - One PostgreSQL primary.
 - REST + project-scoped SSE.
 - Transactional `sync_events` and `pg_notify` wake-ups.
-- In-process SSE hubs with bounded queues.
+- In-process SSE hubs and ephemeral collaboration rooms with bounded queues.
 - Cursor queries, indexes, virtualization, and browser query cache.
 - No Redis, external broker, or microservice; the isolated Yjs description runtime is included.
 
@@ -899,8 +900,8 @@ There is no database-and-broker dual write. The durable database event is always
 | Optimistic concurrency | Prevents silent lost updates | User may need to resolve a conflict |
 | Advisory lock for graph writes | Correct cycle prevention under concurrency | Same-project dependency writes serialize |
 | Normalized queryable fields + JSONB custom fields | Good integrity and extension flexibility | JSONB fields have weaker schema and should not absorb core fields |
-| No Redis initially | Fewer failure modes and honest scope | Approximate limits per instance; no distributed presence |
-| CRDT limited to text only | Core metadata semantics stay understandable | Block-level formatting and awareness are future work |
+| No Redis initially | Fewer failure modes and honest scope | Approximate limits per instance; presence is local to the collaboration room |
+| CRDT limited to text only | Core metadata semantics stay understandable | Block-level formatting remains future work; live selection is ephemeral awareness |
 
 ## 20. Two-day implementation order
 

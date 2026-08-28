@@ -2,16 +2,15 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Redo2, Save, Trash2, Undo2, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Redo2, Save, Search, Trash2, Undo2, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input, Textarea } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { OptimisticStateIndicator } from "@/components/patterns/optimistic-state";
-import { PrioritySelect, TaskStatusSelect } from "@/components/patterns/task-badges";
+import { PrioritySelect, StatusIcon, TaskStatusSelect, statusLabels } from "@/components/patterns/task-badges";
 import { CommentThread } from "@/features/comments/comment-thread";
 import { AssigneePicker } from "./assignee-picker";
 import { AssignmentHistory } from "./assignment-history";
@@ -20,6 +19,7 @@ import { TaskDependencyGraph } from "./task-dependency-graph";
 import { patchTaskInCache, removeTaskFromCache } from "./query-cache";
 import type { Member, Task, UpdateTaskInput } from "@/lib/api";
 import { WorkspaceApiError, dataSource, workspaceApi } from "@/lib/api";
+import type { CollaboratorPresence } from "@/features/collaboration/use-project-presence";
 
 interface TaskDetailPanelProps {
   projectId: string;
@@ -29,15 +29,21 @@ interface TaskDetailPanelProps {
   onOpenTask: (taskId: string) => void;
   onToggleExpand?: () => void;
   detailExpanded?: boolean;
+  collaborators?: CollaboratorPresence[];
+  onSelectionChange?: (from: number, to: number) => void;
 }
 
-export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTask, onToggleExpand, detailExpanded = false }: TaskDetailPanelProps) {
+export function TaskDetailPanel({ projectId, taskId, members, collaborators = [], onSelectionChange, onClose, onOpenTask, onToggleExpand, detailExpanded = false }: TaskDetailPanelProps) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState({ taskId: "", description: "", title: "" });
   const [conflictOpen, setConflictOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [dependencyError, setDependencyError] = useState("");
+  const [dependencySearch, setDependencySearch] = useState("");
   const [tagDraft, setTagDraft] = useState("");
+  const [customFieldsDrafts, setCustomFieldsDrafts] = useState<Record<string, Record<string, string>>>({});
+  const [customFieldKey, setCustomFieldKey] = useState("");
+  const [customFieldValue, setCustomFieldValue] = useState("");
   const taskKey = ["task", projectId, taskId];
   const query = useQuery({ queryKey: taskKey, queryFn: () => workspaceApi.getTask(projectId, taskId) });
   const task = query.data;
@@ -58,21 +64,38 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
     onSuccess: (saved, input) => {
       patchTaskInCache(queryClient, projectId, { ...saved, syncState: "synced" });
       setDraft({ taskId: saved.id, title: saved.title, description: saved.description });
+      setCustomFieldsDrafts((current) => ({ ...current, [saved.id]: saved.customFields }));
       if (input.assigneeIds) void queryClient.invalidateQueries({ queryKey: ["assignment-history", projectId, taskId] });
     },
   });
 
-  const candidateQuery = useQuery({
-    queryKey: ["dependency-candidates", projectId, taskId],
+  const relatedTasksQuery = useQuery({
+    queryKey: ["dependency-related", projectId, taskId],
     queryFn: () => workspaceApi.listTasks(projectId, { limit: 100 }),
+    enabled: Boolean(task),
+  });
+  const candidateQuery = useQuery({
+    queryKey: ["dependency-candidates", projectId, taskId, dependencySearch],
+    queryFn: () => workspaceApi.listTasks(projectId, { limit: 100, search: dependencySearch }),
     enabled: Boolean(task),
   });
 
   const dependencyMutation = useMutation({
     mutationFn: (dependencyTaskId: string) => workspaceApi.addDependency(projectId, taskId, dependencyTaskId),
-    onMutate: () => setDependencyError(""),
+    onMutate: async (dependencyTaskId) => {
+      setDependencyError("");
+      await queryClient.cancelQueries({ queryKey: taskKey });
+      const previous = queryClient.getQueryData<Task>(taskKey);
+      if (previous && !previous.dependencyIds.includes(dependencyTaskId)) {
+        patchTaskInCache(queryClient, projectId, { ...previous, dependencyIds: [...previous.dependencyIds, dependencyTaskId], syncState: "pending" });
+      }
+      return { previous };
+    },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: taskKey }); },
-    onError: (error) => setDependencyError(error instanceof Error ? error.message : "Dependency could not be added."),
+    onError: (error, _dependencyTaskId, context) => {
+      if (context?.previous) patchTaskInCache(queryClient, projectId, context.previous);
+      setDependencyError(error instanceof Error ? error.message : "Dependency could not be added.");
+    },
   });
   const removeDependency = useMutation({
     mutationFn: (dependencyTaskId: string) => workspaceApi.removeDependency(projectId, taskId, dependencyTaskId),
@@ -125,6 +148,8 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
   }
 
   const dependencyCandidates = candidateQuery.data?.items.filter((item) => item.id !== task.id && !task.dependencyIds.includes(item.id)).slice(0, 10) ?? [];
+  const customFields = customFieldsDrafts[task.id] ?? task.customFields;
+  const customFieldsChanged = JSON.stringify(customFields) !== JSON.stringify(task.customFields);
   const title = draft.taskId === task.id ? draft.title : task.title;
   const description = draft.taskId === task.id ? draft.description : task.description;
   const saveTextFields = () => update.mutate({ title: title.trim() || task.title, description, expectedVersion: task.version });
@@ -147,7 +172,7 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="space-y-0 px-4 py-4 sm:px-5 sm:py-5">
-          <TaskDependencyGraph task={task} relatedTasks={candidateQuery.data?.items ?? []} isLoading={candidateQuery.isLoading} onOpenTask={onOpenTask} />
+          <TaskDependencyGraph task={task} relatedTasks={relatedTasksQuery.data?.items ?? []} isLoading={relatedTasksQuery.isLoading} onOpenTask={onOpenTask} />
 
           <section aria-labelledby="properties-heading" className="border-b border-[var(--border-subtle)] pb-5">
             <h2 id="properties-heading" className="section-label">Properties</h2>
@@ -164,14 +189,19 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
                 <div className="flex gap-2"><Input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && tagDraft.trim()) { event.preventDefault(); update.mutate({ tags: [...new Set([...task.tags, tagDraft.trim().toLowerCase()])], expectedVersion: task.version }, { onSuccess: () => setTagDraft("") }); } }} className="h-8 text-xs" placeholder="Add a tag" aria-label="New task tag" /><Button size="sm" variant="secondary" disabled={!tagDraft.trim() || update.isPending} onClick={() => update.mutate({ tags: [...new Set([...task.tags, tagDraft.trim().toLowerCase()])], expectedVersion: task.version }, { onSuccess: () => setTagDraft("") })}>Add</Button></div>
               </div>
               <span className="text-[var(--text-muted)]">Custom fields</span>
-              <div className="flex flex-wrap gap-1.5">{Object.entries(task.customFields).length ? Object.entries(task.customFields).map(([key, value]) => <Badge key={key} className="border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)]"><span className="text-[var(--text-muted)]">{key}</span>{String(value)}</Badge>) : <span className="text-xs text-[var(--text-muted)]">None configured</span>}</div>
+              <div className="space-y-2">
+                {Object.entries(customFields).map(([key, value]) => <div key={key} className="flex items-center gap-2"><Input value={String(value)} onChange={(event) => setCustomFieldsDrafts((current) => ({ ...current, [task.id]: { ...customFields, [key]: event.target.value } }))} aria-label={`Custom field ${key}`} className="h-8 text-xs" /><Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`Remove custom field ${key}`} onClick={() => setCustomFieldsDrafts((current) => ({ ...current, [task.id]: Object.fromEntries(Object.entries(customFields).filter(([currentKey]) => currentKey !== key)) }))}><X className="size-3.5" /></Button></div>)}
+                {!Object.entries(customFields).length && <span className="text-xs text-[var(--text-muted)]">None configured</span>}
+                <div className="grid grid-cols-2 gap-2"><Input value={customFieldKey} onChange={(event) => setCustomFieldKey(event.target.value)} aria-label="New custom field name" placeholder="Field name" className="h-8 text-xs" /><Input value={customFieldValue} onChange={(event) => setCustomFieldValue(event.target.value)} aria-label="New custom field value" placeholder="Value" className="h-8 text-xs" /></div>
+                <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="secondary" disabled={!customFieldKey.trim()} onClick={() => { const key = customFieldKey.trim(); setCustomFieldsDrafts((current) => ({ ...current, [task.id]: { ...customFields, [key]: customFieldValue } })); setCustomFieldKey(""); setCustomFieldValue(""); }}>Add field</Button>{customFieldsChanged && <Button type="button" size="sm" onClick={() => update.mutate({ customFields, expectedVersion: task.version })} disabled={update.isPending}><Save className="size-3.5" />Save fields</Button>}</div>
+              </div>
             </div>
           </section>
 
           <section aria-labelledby="description-heading" className="border-b border-[var(--border-subtle)] py-5">
             <h2 id="description-heading" className="section-label">Description</h2>
             {dataSource === "api" ? <>
-              <CollaborativeDescription key={task.id} projectId={projectId} taskId={task.id} initialValue={description} onValueChange={(next) => setDraft({ taskId: task.id, title, description: next })} />
+              <CollaborativeDescription key={task.id} projectId={projectId} taskId={task.id} initialValue={description} collaborators={collaborators} onSelectionChange={onSelectionChange} onValueChange={(next) => setDraft({ taskId: task.id, title, description: next })} />
               {title !== task.title && <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => update.mutate({ title: title.trim() || task.title, expectedVersion: task.version })} disabled={update.isPending}><Save className="size-3.5" />Save title</Button></div>}
             </> : <>
               <Textarea value={description} onChange={(event) => setDraft({ taskId: task.id, title, description: event.target.value })} rows={5} className="mt-3" placeholder="Describe the outcome, context, and acceptance criteria…" />
@@ -187,7 +217,9 @@ export function TaskDetailPanel({ projectId, taskId, members, onClose, onOpenTas
                 return <div key={id} className="flex w-full items-center gap-1 rounded-md border border-[var(--border)] pr-1"><button onClick={() => onOpenTask(id)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-3 py-2 text-left text-xs outline-none hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus)]"><Check className="size-3.5 text-[var(--success)]" /><span className="min-w-0 flex-1 truncate">{linked?.title ?? id.slice(0, 8)}</span><ChevronRight className="size-3.5 text-[var(--text-muted)]" /></button><Button variant="ghost" size="icon" className="size-7" aria-label={`Remove dependency ${linked?.title ?? id}`} disabled={removeDependency.isPending} onClick={() => removeDependency.mutate(id)}><X className="size-3.5" /></Button></div>;
               })}
               {!task.dependencyIds.length && <p className="text-xs text-[var(--text-muted)]">No dependencies yet.</p>}
-              <Select label="Add dependency" value="add" onValueChange={(id) => { if (id !== "add") dependencyMutation.mutate(id); }} disabled={dependencyMutation.isPending} options={[{ value: "add", label: "+ Add dependency" }, ...dependencyCandidates.map((item) => ({ value: item.id, label: `${item.key} · ${item.title}` }))]} className="w-full" />
+              <div className="relative"><Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[var(--text-muted)]" /><Input value={dependencySearch} onChange={(event) => setDependencySearch(event.target.value)} aria-label="Search dependencies" placeholder="Search tasks to add…" className="h-9 pl-9 text-xs" /></div>
+              {dependencyCandidates.length > 0 && <div className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-[var(--border)] p-1" role="listbox" aria-label="Dependency candidates">{dependencyCandidates.map((item) => <button key={item.id} type="button" role="option" aria-selected="false" disabled={dependencyMutation.isPending} onClick={() => { dependencyMutation.mutate(item.id); setDependencySearch(""); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><span className="min-w-0 flex-1 truncate"><span className="font-mono text-[10px] text-[var(--text-muted)]">{item.key}</span> · {item.title}</span><span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-[var(--text-muted)]"><StatusIcon status={item.status} />{statusLabels[item.status]} · blocks {item.blockingCount}</span></button>)}</div>}
+              {!candidateQuery.isLoading && dependencySearch && !dependencyCandidates.length && <p className="text-xs text-[var(--text-muted)]">No matching tasks in this project.</p>}
               {dependencyError && <p className="flex items-start gap-1.5 text-xs text-[var(--danger-text)]"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{dependencyError}</p>}
               <p className="text-[10px] text-[var(--text-muted)]">Cycle-forming dependency edges are rejected transactionally.</p>
             </div>

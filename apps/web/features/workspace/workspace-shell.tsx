@@ -2,7 +2,7 @@
 
 import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Menu, Plus, Search, Sparkles, X } from "lucide-react";
+import { LayoutGrid, List, Menu, Plus, Search, Sparkles, Tags, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -14,14 +14,19 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { prependTaskToCache } from "@/features/tasks/query-cache";
+import { ActivityFeed } from "@/features/activity/activity-feed";
+import { NotificationBell } from "@/features/notifications/notification-bell";
+import { PresenceStrip } from "@/features/collaboration/presence-strip";
+import { useProjectPresence } from "@/features/collaboration/use-project-presence";
 import { TaskDetailPanel } from "@/features/tasks/task-detail-panel";
 import { TaskList } from "@/features/tasks/task-list";
+import { TaskBoard } from "@/features/tasks/task-board";
 import { useProjectEvents } from "@/features/realtime/use-project-events";
 import { dataSource, demoActorId, type ConnectionState, type Project, type TaskFilters, type TaskPriority, type TaskStatus, workspaceApi } from "@/lib/api";
 
-interface WorkspaceShellProps { projectId: string; selectedTaskId?: string }
+interface WorkspaceShellProps { projectId: string; selectedTaskId?: string; showActivity?: boolean }
 
-export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProps) {
+export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false }: WorkspaceShellProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
@@ -38,16 +43,21 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
   const bootstrap = useQuery({ queryKey: ["bootstrap", projectId], queryFn: () => workspaceApi.bootstrap(projectId) });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => workspaceApi.listProjects() });
   const realtimeState = useProjectEvents(projectId, bootstrap.data?.streamCursor ?? 0, dataSource === "api" && Boolean(bootstrap.data));
+  const presence = useProjectPresence(projectId, selectedTaskId, Boolean(bootstrap.data));
   const displayedConnection = dataSource === "api" ? realtimeState : connection;
   const status = (searchParams.get("status") ?? "all") as TaskStatus | "all";
   const priority = (searchParams.get("priority") ?? "all") as TaskPriority | "all";
-  const filters: TaskFilters = { search: searchParams.get("q") ?? "", status, priority };
+  const assigneeId = searchParams.get("assignee") ?? "all";
+  const tag = searchParams.get("tag") ?? "";
+  const view = searchParams.get("view") === "board" ? "board" : "list";
+  const filters: TaskFilters = { search: searchParams.get("q") ?? "", status, priority, assigneeId: assigneeId === "all" ? undefined : assigneeId, tag };
 
   useEffect(() => {
     window.localStorage.setItem("happy-tasks.sidebar-collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
   useEffect(() => {
+    if (search.trim() === (searchParams.get("q") ?? "")) return;
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams(searchParams.toString());
       if (search.trim()) params.set("q", search.trim()); else params.delete("q");
@@ -57,9 +67,15 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
     return () => window.clearTimeout(timer);
   }, [search, projectId, selectedTaskId, router, searchParams]);
 
-  const setFilter = (name: "status" | "priority", value: string) => {
+  const setFilter = (name: "status" | "priority" | "assignee" | "tag", value: string) => {
     const params = new URLSearchParams(searchParams.toString());
     if (value === "all") params.delete(name); else params.set(name, value);
+    const base = selectedTaskId ? `/projects/${projectId}/tasks/${selectedTaskId}` : `/projects/${projectId}`;
+    router.replace(`${base}${params.size ? `?${params}` : ""}`, { scroll: false });
+  };
+  const setView = (nextView: "list" | "board") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextView === "list") params.delete("view"); else params.set("view", nextView);
     const base = selectedTaskId ? `/projects/${projectId}/tasks/${selectedTaskId}` : `/projects/${projectId}`;
     router.replace(`${base}${params.size ? `?${params}` : ""}`, { scroll: false });
   };
@@ -113,9 +129,9 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
   const availableProjects: Project[] = [project, ...(projectsQuery.data ?? []).filter((item) => item.id !== project.id)];
   const selectedCreateProject = availableProjects.find((item) => item.id === createProjectId) ?? project;
   const currentActor = members.find((member) => member.id === demoActorId) ?? members.find((member) => member.role === "OWNER") ?? members[0];
-  const taskList = <TaskList projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} />;
+  const taskList = view === "board" ? <TaskBoard projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} /> : <TaskList projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} />;
   const detailExpanded = Boolean(selectedTaskId && expandedDetailTaskId === selectedTaskId);
-  const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} onClose={closeTask} onOpenTask={openTask} onToggleExpand={toggleDetailPanel} detailExpanded={detailExpanded} /> : null;
+  const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} collaborators={presence.collaborators} onSelectionChange={presence.updateSelection} onClose={closeTask} onOpenTask={openTask} onToggleExpand={toggleDetailPanel} detailExpanded={detailExpanded} /> : null;
 
   return (
     <div className="flex h-dvh overflow-hidden bg-[var(--background)] text-[var(--text)]">
@@ -132,24 +148,31 @@ export function WorkspaceShell({ projectId, selectedTaskId }: WorkspaceShellProp
               {showDebugMetadata && <span className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-2 py-1 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{dataSource === "mock" ? "MOCK API" : "GO API"}</span>}
               {dataSource === "mock" && <Select label="Demo connection state" value={connection} onValueChange={(value) => setConnection(value as ConnectionState)} options={[{ value: "live", label: "Live" }, { value: "reconnecting", label: "Reconnecting" }, { value: "offline", label: "Offline" }]} className="min-w-32" />}
             </div>
+            <PresenceStrip collaborators={presence.collaborators} members={members} />
+            <NotificationBell projectId={projectId} members={members} />
             <ThemeToggle />
             <Button onClick={openCreateTask} aria-label="Create new task" title="Create new task"><Plus className="size-4" /><span className="hidden sm:inline">New task</span></Button>
           </div>
-          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-2.5 lg:px-6">
+          {!showActivity && <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-2.5 lg:px-6">
             <div className="relative min-w-[200px] flex-[1_1_240px] sm:max-w-sm"><Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-[var(--text-muted)]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" className="pl-10" /></div>
+            <div className="flex items-center rounded-full border border-[var(--border)] bg-[var(--panel)] p-0.5" role="group" aria-label="Task view"><Button type="button" variant={view === "list" ? "primary" : "ghost"} size="sm" className="min-h-8 px-3" onClick={() => setView("list")} aria-pressed={view === "list"}><List className="size-3.5" /><span className="hidden sm:inline">List</span></Button><Button type="button" variant={view === "board" ? "primary" : "ghost"} size="sm" className="min-h-8 px-3" onClick={() => setView("board")} aria-pressed={view === "board"}><LayoutGrid className="size-3.5" /><span className="hidden sm:inline">Board</span></Button></div>
             <Select label="Filter by status" value={status} onValueChange={(value) => setFilter("status", value)} options={[{ value: "all", label: "All statuses" }, { value: "todo", label: "To do" }, { value: "in_progress", label: "In progress" }, { value: "blocked", label: "Blocked" }, { value: "done", label: "Done" }]} />
             <Select label="Filter by priority" value={priority} onValueChange={(value) => setFilter("priority", value)} options={[{ value: "all", label: "All priorities" }, { value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "urgent", label: "Urgent" }]} />
-          </div>
+            <Select label="Filter by assignee" value={assigneeId} onValueChange={(value) => setFilter("assignee", value)} options={[{ value: "all", label: "All assignees" }, ...members.filter((member) => member.membershipStatus === "ACTIVE" || !member.membershipStatus).map((member) => ({ value: member.id, label: member.displayName }))]} />
+            <div className="relative min-w-36"><Tags className="pointer-events-none absolute top-1/2 left-3.5 size-3.5 -translate-y-1/2 text-[var(--text-muted)]" /><Input aria-label="Filter by tag" value={tag} onChange={(event) => setFilter("tag", event.target.value)} placeholder="Filter tags…" className="pl-9" /></div>
+          </div>}
         </header>
         <div className="min-h-0 flex-1 overflow-hidden bg-[var(--panel)] lg:rounded-xl lg:border lg:border-[var(--border)] lg:shadow-sm lg:shadow-[var(--shadow)]">
-          <div className="hidden h-full lg:block">
-            <Group orientation="horizontal">
-              <Panel id="tasks" minSize="38%" defaultSize={selectedTaskId ? "58%" : "100%"}>{taskList}</Panel>
-              {selectedTaskId && <><Separator className="group relative w-px bg-[var(--border)] outline-none after:absolute after:inset-y-0 after:-left-1 after:w-3 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]" /><Panel id="detail" panelRef={detailPanelRef} minSize="34%" defaultSize="42%" onResize={(size) => setExpandedDetailTaskId(size.asPercentage >= 55 ? selectedTaskId : null)}>{taskDetail}</Panel></>}
-            </Group>
-          </div>
-          <div className="h-full lg:hidden">{taskList}</div>
-          {selectedTaskId && <div className="fixed inset-0 z-40 bg-[var(--panel)] lg:hidden">{taskDetail}</div>}
+          {showActivity ? <ActivityFeed projectId={projectId} members={members} /> : <>
+            <div className="hidden h-full lg:block">
+              <Group orientation="horizontal">
+                <Panel id="tasks" minSize="38%" defaultSize={selectedTaskId ? "58%" : "100%"}>{taskList}</Panel>
+                {selectedTaskId && <><Separator className="group relative w-px bg-[var(--border)] outline-none after:absolute after:inset-y-0 after:-left-1 after:w-3 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]" /><Panel id="detail" panelRef={detailPanelRef} minSize="34%" defaultSize="42%" onResize={(size) => setExpandedDetailTaskId(size.asPercentage >= 55 ? selectedTaskId : null)}>{taskDetail}</Panel></>}
+              </Group>
+            </div>
+            <div className="h-full lg:hidden">{taskList}</div>
+            {selectedTaskId && <div className="fixed inset-0 z-40 bg-[var(--panel)] lg:hidden">{taskDetail}</div>}
+          </>}
         </div>
       </main>
       <Dialog open={createOpen} onOpenChange={setCreateOpen} title="Create a task" description="Choose the project first, then give the task a clear outcome.">

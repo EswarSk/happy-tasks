@@ -73,6 +73,18 @@ func DecodeAssignmentCursor(value string) (*AssignmentCursor, error) {
 	return &AssignmentCursor{OccurredAt: c.Time, ID: c.ID}, nil
 }
 
+func EncodeNotificationCursor(createdAt time.Time, id string) string {
+	return encodeCursor(createdAt, id)
+}
+
+func DecodeNotificationCursor(value string) (*NotificationCursor, error) {
+	c, err := decodeCursor(value)
+	if err != nil {
+		return nil, err
+	}
+	return &NotificationCursor{CreatedAt: c.Time, ID: c.ID}, nil
+}
+
 func encodeCursor(t time.Time, id string) string {
 	b, _ := json.Marshal(cursor{Time: t.UTC(), ID: id})
 	return base64.RawURLEncoding.EncodeToString(b)

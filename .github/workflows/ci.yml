@@ -13,6 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  contracts:
+    name: Generated API contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Regenerate OpenAPI types
+        run: ./scripts/generate-api-contracts.sh
+      - name: Fail on stale generated files
+        run: git diff --exit-code -- apps/web/lib/api/generated/openapi.ts internal/transport/httpapi/generated/openapi.gen.go
+
   database:
     name: Database migrations and seeds
     runs-on: ubuntu-latest
@@ -95,6 +112,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck --if-present
       - run: npm run test --if-present
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
       - run: npm run build
         env:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:8080

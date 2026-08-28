@@ -67,3 +67,12 @@ func TestRolePolicy(t *testing.T) {
 		t.Fatal("owner should manage roles subject to final-owner policy")
 	}
 }
+
+func TestValidCommentReactionType(t *testing.T) {
+	if !ValidCommentReactionType("LIKE") || !ValidCommentReactionType("INSIGHTFUL") {
+		t.Fatal("expected supported comment reactions")
+	}
+	if ValidCommentReactionType("HEART") {
+		t.Fatal("unexpected unsupported comment reaction")
+	}
+}

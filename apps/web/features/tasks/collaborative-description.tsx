@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Redo2, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
+import type { CollaboratorPresence } from "@/features/collaboration/use-project-presence";
 
 type Connection = "connecting" | "synced" | "saving" | "offline";
 
@@ -24,6 +25,8 @@ interface CollaborativeDescriptionProps {
   taskId: string;
   initialValue: string;
   onValueChange: (value: string) => void;
+  collaborators?: CollaboratorPresence[];
+  onSelectionChange?: (from: number, to: number) => void;
 }
 
 const encode = (value: Uint8Array) => {
@@ -51,13 +54,13 @@ function replaceText(text: Y.Text, next: string) {
   }, "local");
 }
 
-export function CollaborativeDescription({ projectId, taskId, initialValue, onValueChange }: CollaborativeDescriptionProps) {
+export function CollaborativeDescription({ projectId, taskId, initialValue, collaborators = [], onSelectionChange, onValueChange }: CollaborativeDescriptionProps) {
   const [session, setSession] = useState(0);
   const restartFromSharedSnapshot = useCallback(() => setSession((value) => value + 1), []);
-  return <CollaborativeDescriptionSession key={session} projectId={projectId} taskId={taskId} initialValue={initialValue} onValueChange={onValueChange} onInitializationRace={restartFromSharedSnapshot} />;
+  return <CollaborativeDescriptionSession key={session} projectId={projectId} taskId={taskId} initialValue={initialValue} collaborators={collaborators} onSelectionChange={onSelectionChange} onValueChange={onValueChange} onInitializationRace={restartFromSharedSnapshot} />;
 }
 
-function CollaborativeDescriptionSession({ projectId, taskId, initialValue, onValueChange, onInitializationRace }: CollaborativeDescriptionProps & { onInitializationRace: () => void }) {
+function CollaborativeDescriptionSession({ projectId, taskId, initialValue, collaborators = [], onSelectionChange, onValueChange, onInitializationRace }: CollaborativeDescriptionProps & { onInitializationRace: () => void }) {
   const doc = useMemo(() => new Y.Doc(), []);
   const yText = useMemo(() => doc.getText("description"), [doc]);
   const undoManager = useMemo(() => new Y.UndoManager(yText, { trackedOrigins: new Set(["local"]) }), [yText]);
@@ -190,6 +193,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, onVa
   }, [undoManager]);
 
   const statusText = { connecting: "Connecting…", saving: "Saving…", synced: "Synced", offline: "Offline — edits stay local" }[connection];
+  const activeEditors = collaborators.filter((collaborator) => collaborator.taskId === taskId);
   return (
     <div className="mt-3">
       <Textarea
@@ -200,11 +204,14 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, onVa
           setValue(next);
           onValueChange(next);
         }}
+        onSelect={(event) => onSelectionChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
+        onFocus={(event) => onSelectionChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
         rows={7}
         disabled={!ready}
         placeholder="Describe the outcome, context, and acceptance criteria…"
         aria-label="Collaborative task description"
       />
+      {activeEditors.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-[var(--text-muted)]" aria-live="polite"><span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-full bg-[var(--success)]" />{activeEditors.map((editor) => editor.selectionFrom !== editor.selectionTo ? "A collaborator is selecting text" : "A collaborator is editing").join(" · ")}</span></div>}
       <div className="mt-1.5 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
         <span className={connection === "offline" ? "text-[var(--warning-text)]" : undefined}>{statusText}</span>
         <div className="flex items-center gap-1">

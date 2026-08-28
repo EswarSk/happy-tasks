@@ -3,7 +3,7 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { Comment, ConnectionState, Page, Task, TaskPriority, TaskStatus } from "@/lib/api";
+import type { ActivityItem, Comment, ConnectionState, Page, Task, TaskPriority, TaskStatus } from "@/lib/api";
 import { createSseParser } from "@/lib/realtime/sse";
 import { incrementTaskCommentCount } from "@/features/tasks/query-cache";
 
@@ -12,6 +12,8 @@ export interface SyncEvent {
   sequence: number;
   type: string;
   aggregateId: string;
+  aggregateType?: string;
+  actorId?: string;
   aggregateVersion?: number;
   payload: Record<string, unknown> & { task?: Record<string, unknown>; comment?: Record<string, unknown> };
 }
@@ -58,9 +60,34 @@ function applyTaskEvent(queryClient: QueryClient, projectId: string, payload: Re
   });
 }
 
+function activityDescription(type: string) {
+  return ({
+    "project.created": "created the project",
+    "task.created": "created a task",
+    "task.updated": "updated a task",
+    "task.deleted": "deleted a task",
+    "comment.created": "added a comment",
+    "comment.reaction.changed": "changed a comment reaction",
+    "dependency.created": "added a dependency",
+    "dependency.deleted": "removed a dependency",
+    "membership.created": "added a project member",
+    "membership.updated": "updated a project member",
+  } as Record<string, string>)[type] ?? type.replaceAll(".", " ");
+}
+
 export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
   const wrapped = event.payload.task ?? event.payload.comment;
   const payload = (wrapped ?? event.payload) as Record<string, unknown>;
+  queryClient.setQueryData<InfiniteData<Page<ActivityItem>>>(["activity", event.projectId], (current) => {
+    if (!current || current.pages.some((page) => page.items.some((item) => item.sequence === event.sequence))) return current;
+    const item: ActivityItem = {
+      id: `${event.projectId}:${event.sequence}`, projectId: event.projectId, sequence: event.sequence, eventType: event.type,
+      aggregateType: event.aggregateType ?? "event", aggregateId: event.aggregateId, actorId: event.actorId ?? "", description: activityDescription(event.type), occurredAt: new Date().toISOString(),
+    };
+    const pages = [...current.pages];
+    pages[0] = { ...pages[0], items: [item, ...pages[0].items] };
+    return { ...current, pages };
+  });
   if (event.type === "task.created" || event.type === "task.updated" || event.type === "task.description.updated") {
     applyTaskEvent(queryClient, event.projectId, payload);
     if (event.type === "task.created") void queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -80,6 +107,7 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
     const knownComment = queryClient.getQueryData<InfiniteData<Page<Comment>>>(["comments", event.projectId, taskId])?.pages.some((page) => page.items.some((item) => item.id === String(payload.id))) ?? false;
     const comment: Comment = {
       id: String(payload.id), projectId: event.projectId, taskId,
+      ...(payload.parentId ? { parentId: String(payload.parentId) } : {}),
       authorId: String(payload.authorId ?? (payload.author as { id?: string } | undefined)?.id ?? ""),
       body: String(payload.body ?? ""), createdAt: String(payload.createdAt ?? new Date().toISOString()),
       version: Number(payload.version ?? 1), syncState: "synced",
@@ -91,6 +119,11 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
       return { ...current, pages };
     });
     if (!knownComment) incrementTaskCommentCount(queryClient, event.projectId, taskId);
+    void queryClient.invalidateQueries({ queryKey: ["notifications", event.projectId] });
+  }
+  if (event.type === "comment.reaction.changed") {
+    const taskId = String(payload.taskId ?? "");
+    void queryClient.invalidateQueries({ queryKey: ["comments", event.projectId, taskId] });
   }
   if (event.type === "membership.created" || event.type === "membership.updated") {
     // Membership changes can remove assignments in one transaction. Refresh both

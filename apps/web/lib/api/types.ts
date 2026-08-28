@@ -5,6 +5,7 @@ export type SyncState = "synced" | "pending" | "failed" | "conflict";
 export type UserStatus = "ACTIVE" | "SUSPENDED" | "DELETED";
 export type MemberRole = "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
 export type MembershipStatus = "ACTIVE" | "INVITED" | "SUSPENDED" | "REMOVED";
+export type CommentReactionType = "like" | "celebrate" | "insightful";
 
 export interface Project {
   id: string;
@@ -50,18 +51,47 @@ export interface Comment {
   id: string;
   projectId: string;
   taskId: string;
+  parentId?: string;
   authorId: string;
   body: string;
   createdAt: string;
   version: number;
   syncState?: SyncState;
+  reactions?: CommentReaction[];
+}
+
+export interface CommentReaction {
+  projectId: string;
+  taskId: string;
+  commentId: string;
+  type: CommentReactionType;
+  count: number;
+  reacted: boolean;
 }
 
 export interface ActivityItem {
   id: string;
+  projectId: string;
+  sequence: number;
+  eventType: string;
+  aggregateType: string;
+  aggregateId: string;
   actorId: string;
   description: string;
   occurredAt: string;
+}
+
+export interface Notification {
+  id: string;
+  projectId: string;
+  userId: string;
+  taskId: string;
+  commentId: string;
+  actorId: string;
+  type: "MENTION";
+  body: string;
+  readAt?: string;
+  createdAt: string;
 }
 
 export interface AssignmentHistoryItem {
@@ -86,6 +116,8 @@ export interface TaskFilters {
   search?: string;
   status?: TaskStatus | "all";
   priority?: TaskPriority | "all";
+  assigneeId?: string;
+  tag?: string;
   cursor?: string;
   limit?: number;
 }
@@ -150,8 +182,13 @@ export interface WorkspaceApi {
   redoTask(projectId: string, taskId: string): Promise<Task>;
   deleteTask(projectId: string, taskId: string, expectedVersion: number): Promise<{ id: string; deleted: true; version: number }>;
   listComments(projectId: string, taskId: string, cursor?: string): Promise<Page<Comment>>;
-  createComment(projectId: string, taskId: string, body: string, clientId: string): Promise<Comment>;
+  createComment(projectId: string, taskId: string, body: string, clientId: string, parentId?: string): Promise<Comment>;
+  setCommentReaction(projectId: string, taskId: string, commentId: string, type: CommentReactionType): Promise<CommentReaction>;
+  removeCommentReaction(projectId: string, taskId: string, commentId: string): Promise<CommentReaction>;
   addDependency(projectId: string, taskId: string, dependencyTaskId: string): Promise<Dependency>;
   removeDependency(projectId: string, taskId: string, dependencyTaskId: string): Promise<Dependency>;
   listAssignmentHistory(projectId: string, taskId: string, cursor?: string): Promise<Page<AssignmentHistoryItem>>;
+  listActivity(projectId: string, after?: string): Promise<Page<ActivityItem>>;
+  listNotifications(projectId: string, unreadOnly?: boolean, cursor?: string): Promise<Page<Notification>>;
+  markNotificationRead(projectId: string, notificationId: string): Promise<Notification>;
 }

@@ -12,6 +12,7 @@ tags:
   - name: Tasks
   - name: Dependencies
   - name: Comments
+  - name: Notifications
   - name: Synchronization
 paths:
   /health/live:
@@ -100,6 +101,14 @@ paths:
         - name: priority
           in: query
           schema: {$ref: "#/components/schemas/TaskPriority"}
+        - name: assignee
+          in: query
+          description: Return tasks assigned to this project member.
+          schema: {type: string, format: uuid}
+        - name: tag
+          in: query
+          description: Case-insensitive partial tag filter.
+          schema: {type: string, maxLength: 100}
         - name: q
           in: query
           description: Case-insensitive title, description, or tag search.
@@ -456,6 +465,43 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/AssignmentOperationPage"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/comments/{commentId}/reaction:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/CommentId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    put:
+      tags: [Comments]
+      operationId: setCommentReaction
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SetCommentReaction"}
+      responses:
+        "200":
+          description: The current reaction summary for the selected type.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CommentReaction"}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [Comments]
+      operationId: removeCommentReaction
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: The removed reaction summary.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CommentReaction"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/events:
     parameters:
       - {$ref: "#/components/parameters/ProjectId"}
@@ -477,6 +523,79 @@ paths:
           content:
             text/event-stream:
               schema: {type: string}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/collaboration/live:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Synchronization]
+      operationId: collaborateProjectPresence
+      description: WebSocket endpoint for ephemeral project presence and task text selections. These frames are intentionally not durable.
+      responses:
+        "101":
+          description: Switching Protocols to the project collaboration stream.
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/activity:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Synchronization]
+      operationId: listProjectActivity
+      description: Returns a recent activity projection over the durable project event window.
+      parameters:
+        - name: after
+          in: query
+          schema: {type: integer, format: int64, minimum: 0, default: 0}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Recent project activity, oldest first within each page.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ActivityPage"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/notifications:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      description: Lists mention notifications for the current project member, newest first.
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: unread
+          in: query
+          schema: {type: boolean, default: true}
+      responses:
+        "200":
+          description: Mention notifications.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/NotificationPage"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/notifications/{notificationId}/read:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/NotificationId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    post:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+        - {$ref: "#/components/parameters/RequestId"}
+      responses:
+        "200":
+          description: Notification marked as read.
+          headers:
+            X-Stream-Cursor: {$ref: "#/components/headers/StreamCursor"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Notification"}
         default: {$ref: "#/components/responses/Error"}
 components:
   parameters:
@@ -519,6 +638,16 @@ components:
       schema: {type: string, format: uuid}
     DependencyTaskId:
       name: dependencyTaskId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    NotificationId:
+      name: notificationId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -760,17 +889,22 @@ components:
         id: {type: string, format: uuid}
         projectId: {type: string, format: uuid}
         taskId: {type: string, format: uuid}
+        parentId: {type: string, format: uuid, description: Parent comment on the same task when this comment is a reply.}
         author: {$ref: "#/components/schemas/User"}
         body: {type: string}
         version: {type: integer, format: int64}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
         deletedAt: {type: string, format: date-time}
+        reactions:
+          type: array
+          items: {$ref: "#/components/schemas/CommentReaction"}
     CreateComment:
       type: object
       required: [body]
       properties:
         id: {type: string, format: uuid}
+        parentId: {type: string, format: uuid, description: Optional comment to reply to. It must belong to the same task.}
         body: {type: string, minLength: 1, maxLength: 10000}
     CommentPage:
       type: object
@@ -779,6 +913,64 @@ components:
         items:
           type: array
           items: {$ref: "#/components/schemas/Comment"}
+        nextCursor: {type: string}
+    CommentReaction:
+      type: object
+      required: [projectId, taskId, commentId, type, count, reacted]
+      properties:
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        commentId: {type: string, format: uuid}
+        type: {type: string, enum: [LIKE, CELEBRATE, INSIGHTFUL]}
+        count: {type: integer, format: int64, minimum: 0}
+        reacted: {type: boolean}
+    SetCommentReaction:
+      type: object
+      required: [type]
+      properties:
+        type: {type: string, enum: [LIKE, CELEBRATE, INSIGHTFUL]}
+    ActivityItem:
+      type: object
+      required: [id, projectId, sequence, eventType, aggregateType, aggregateId, description, occurredAt]
+      properties:
+        id: {type: string}
+        projectId: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        eventType: {type: string}
+        aggregateType: {type: string}
+        aggregateId: {type: string, format: uuid}
+        actorId: {type: string, format: uuid}
+        description: {type: string}
+        occurredAt: {type: string, format: date-time}
+    ActivityPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/ActivityItem"}
+        nextCursor: {type: string}
+    Notification:
+      type: object
+      required: [id, projectId, userId, taskId, commentId, actorId, type, body, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        userId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        commentId: {type: string, format: uuid}
+        actorId: {type: string, format: uuid}
+        type: {type: string, enum: [MENTION]}
+        body: {type: string}
+        readAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+    NotificationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Notification"}
         nextCursor: {type: string}
     SyncEvent:
       type: object
