@@ -16,6 +16,7 @@ interface DescriptionFrame {
   updates?: string[];
   text?: string;
   initialized?: boolean;
+  readOnly?: boolean;
   messageId?: string;
   error?: string;
 }
@@ -68,6 +69,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
   const suppressRef = useRef(false);
   const [value, setValue] = useState(initialValue);
   const [connection, setConnection] = useState<Connection>("connecting");
+  const [readOnly, setReadOnly] = useState(false);
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const onValueChangeRef = useRef(onValueChange);
@@ -139,9 +141,10 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
             return;
           } finally { suppressRef.current = false; }
           initializedRef.current = Boolean(frame.initialized);
+          setReadOnly(Boolean(frame.readOnly));
           if (!frame.initialized) sendUpdate(Y.encodeStateAsUpdate(doc), "init");
           else for (const queued of pending.values()) if (current.readyState === WebSocket.OPEN) current.send(queued);
-          setReady(Boolean(frame.initialized));
+          setReady(Boolean(frame.initialized || frame.readOnly));
           setValue(yText.toString());
           onValueChangeRef.current(yText.toString());
           setConnection(pending.size ? "saving" : "synced");
@@ -159,6 +162,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
           setConnection(pending.size ? "saving" : "synced");
         } else if (frame.type === "error") {
           if (frame.error === "DESCRIPTION_ALREADY_INITIALIZED") initializationRaceRef.current();
+          else if (frame.error === "DESCRIPTION_EDITOR_LIMIT_REACHED") { pending.clear(); setReadOnly(true); setReady(true); setConnection("synced"); }
           else setConnection("offline");
         }
       };
@@ -192,7 +196,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
     };
   }, [undoManager]);
 
-  const statusText = { connecting: "Connecting…", saving: "Saving…", synced: "Synced", offline: "Offline — edits stay local" }[connection];
+  const statusText = readOnly ? "View only — editor limit reached" : { connecting: "Connecting…", saving: "Saving…", synced: "Synced", offline: "Offline — edits stay local" }[connection];
   const activeEditors = collaborators.filter((collaborator) => collaborator.taskId === taskId);
   return (
     <div className="mt-3">
@@ -207,10 +211,11 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
         onSelect={(event) => onSelectionChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
         onFocus={(event) => onSelectionChange?.(event.currentTarget.selectionStart, event.currentTarget.selectionEnd)}
         rows={7}
-        disabled={!ready}
+        disabled={!ready || readOnly}
         placeholder="Describe the outcome, context, and acceptance criteria…"
         aria-label="Collaborative task description"
       />
+      {readOnly && <p className="mt-2 text-xs text-[var(--text-muted)]" role="status">This task already has 100 active editors. You can follow changes, but editing is temporarily unavailable. Reconnect to request a slot.</p>}
       {activeEditors.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-[var(--text-muted)]" aria-live="polite"><span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-full bg-[var(--success)]" />{activeEditors.map((editor) => editor.selectionFrom !== editor.selectionTo ? "A collaborator is selecting text" : "A collaborator is editing").join(" · ")}</span></div>}
       <div className="mt-1.5 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
         <span className={connection === "offline" ? "text-[var(--warning-text)]" : undefined}>{statusText}</span>

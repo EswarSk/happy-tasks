@@ -11,7 +11,9 @@ The workspace has two intentionally different synchronization paths:
   upgrade). The first client stores a full Yjs snapshot; later updates are
   opaque Yjs deltas persisted and relayed to peers. A plain-text projection is
   kept in `tasks.description` for search and list bootstrap, without bumping
-  the metadata version.
+  the metadata version. Each task allows up to 100 live editors; additional
+  sessions remain connected as read-only observers. A later reconnect can claim
+  a slot after an editor leaves.
 
 Undo and redo are explicit task actions in the detail header. They are scoped
 to the authenticated actor and operate on the latest metadata operation. An

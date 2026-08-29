@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	maxDescriptionEditors = 100
 	descriptionMaxFrame   = 2 << 20
 	descriptionWriteWait  = 10 * time.Second
 	descriptionPingPeriod = 30 * time.Second
@@ -28,6 +29,7 @@ type descriptionFrame struct {
 	Text        string   `json:"text,omitempty"`
 	ActorID     string   `json:"actorId,omitempty"`
 	Initialized bool     `json:"initialized,omitempty"`
+	ReadOnly    bool     `json:"readOnly,omitempty"`
 	Snapshot    string   `json:"snapshot,omitempty"`
 	Updates     []string `json:"updates,omitempty"`
 	Version     int64    `json:"version,omitempty"`
@@ -35,10 +37,11 @@ type descriptionFrame struct {
 }
 
 type descriptionClient struct {
-	conn *websocket.Conn
-	send chan []byte
-	done chan struct{}
-	once sync.Once
+	conn   *websocket.Conn
+	send   chan []byte
+	done   chan struct{}
+	once   sync.Once
+	editor bool
 }
 
 type descriptionHub struct {
@@ -50,13 +53,21 @@ func newDescriptionHub() *descriptionHub {
 	return &descriptionHub{rooms: make(map[string]map[*descriptionClient]struct{})}
 }
 
-func (h *descriptionHub) join(room string, client *descriptionClient) {
+func (h *descriptionHub) join(room string, client *descriptionClient) bool {
 	h.mu.Lock()
 	if h.rooms[room] == nil {
 		h.rooms[room] = make(map[*descriptionClient]struct{})
 	}
+	editors := 0
+	for member := range h.rooms[room] {
+		if member.editor {
+			editors++
+		}
+	}
+	client.editor = editors < maxDescriptionEditors
 	h.rooms[room][client] = struct{}{}
 	h.mu.Unlock()
+	return client.editor
 }
 
 func (h *descriptionHub) leave(room string, client *descriptionClient) {
@@ -122,7 +133,7 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	client := &descriptionClient{conn: conn, send: make(chan []byte, 32), done: make(chan struct{})}
 	room := projectID + ":" + taskID
-	h.descriptionHub.join(room, client)
+	canEdit := h.descriptionHub.join(room, client)
 	defer h.descriptionHub.leave(room, client)
 	go descriptionWriter(client)
 
@@ -135,7 +146,7 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bootstrap := descriptionFrame{Type: "bootstrap", Initialized: document.Initialized, Text: task.Description}
+	bootstrap := descriptionFrame{Type: "bootstrap", Initialized: document.Initialized, Text: task.Description, ReadOnly: !canEdit}
 	if document.Initialized {
 		bootstrap.Snapshot = base64.StdEncoding.EncodeToString(document.Snapshot)
 	} else {
@@ -164,6 +175,10 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 		update, decodeErr := base64.StdEncoding.DecodeString(frame.Update)
 		if decodeErr != nil || len(update) == 0 || len(update) > descriptionMaxFrame {
 			_ = client.sendJSON(descriptionFrame{Type: "error", MessageID: frame.MessageID, Error: "The Yjs update is not valid base64 or exceeds the 2 MB limit."})
+			continue
+		}
+		if !client.editor {
+			_ = client.sendJSON(descriptionFrame{Type: "error", MessageID: frame.MessageID, Error: "DESCRIPTION_EDITOR_LIMIT_REACHED"})
 			continue
 		}
 		messageID := frame.MessageID
