@@ -1,6 +1,6 @@
 # Happy Tasks web
 
-Next.js App Router frontend for the collaborative task workspace. The initial UI runs against a realistic in-memory adapter with 10,000 tasks, while every feature consumes the replaceable `WorkspaceApi` interface.
+Next.js App Router frontend for the collaborative task workspace. API mode is the default; every feature consumes the replaceable `WorkspaceApi` interface and mock mode remains available for deterministic UI demos.
 
 ## Run locally
 
@@ -10,11 +10,11 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open <http://localhost:3000>. The root route redirects to the deterministic demo project.
+Open <http://localhost:3000>. The root route redirects to the first authenticated project in API mode.
 
 ## Data source
 
-Mock mode is the default:
+Mock mode is opt-in:
 
 ```dotenv
 NEXT_PUBLIC_DATA_SOURCE=mock

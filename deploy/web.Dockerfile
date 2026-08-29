@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM node:22.22.2-alpine3.22 AS dependencies
 
 WORKDIR /app

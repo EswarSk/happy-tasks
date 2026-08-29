@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM golang:1.25.7-alpine AS build
 
 RUN --mount=type=cache,target=/go/pkg/mod \
