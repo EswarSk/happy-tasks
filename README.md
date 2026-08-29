@@ -7,6 +7,8 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 ## What is included
 
 - Multiple projects with project creation and a responsive project switcher.
+- Email/password authentication with bcrypt password hashes, random HttpOnly session cookies, logout, and an explicit local demo fallback.
+- Organization membership isolation layered beneath project roles; project reads and invitations require the same active organization.
 - Task creation, editing, deletion, search, status/priority filters, explicit assignee add/remove controls, tags, custom fields, and optimistic UI.
 - Stable user identities, soft membership lifecycle (active/invited/suspended/removed), role enforcement, final-owner protection, paginated member search, and append-only assignment history.
 - Dependency creation/removal with transactional cycle prevention.
@@ -20,6 +22,8 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Yjs CRDT description editing over a task-scoped WebSocket with durable snapshots, replayable updates, and a searchable text projection.
 - Durable, ordered project event streams with reconnect/replay semantics.
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
+- Task file attachments for documents and photos up to 25 MB each, stored outside task JSON with authenticated download/delete and SHA-256 metadata.
+- Installable PWA manifest, service worker shell caching, offline fallback, and connection status messaging.
 - Mock mode for isolated UI development and API mode for the integrated product.
 - Reversible migrations, deterministic demo/scale seeds, schema verification, CI, container builds, and a k6 scenario.
 - A recorded 10,000-task load-test baseline in [`docs/load-test-results.md`](docs/load-test-results.md).
@@ -147,6 +151,8 @@ cd apps/web
 NEXT_PUBLIC_DATA_SOURCE=api NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run dev
 ```
 
+Authentication is enabled by default in Compose; set `AUTH_REQUIRED=false` only for a deliberately unauthenticated local demo. New accounts receive a private starter project. After loading the demo seed, sign in as `maya@example.test` with password `password` (the credential is for local fixtures only). Set `ATTACHMENTS_DIR` to a persistent volume in development or deployment. A project's aggregate data can exceed 2 MB because tasks remain paginated and file bytes are stored separately; task files support common documents and images up to 25 MB each, while the API still rejects a single oversized JSON mutation.
+
 ## Verification
 
 The CI workflow applies migrations to an empty PostgreSQL instance, loads and verifies demo data, exercises a real transactional database flow, creates 10,000 tasks and 1,000 comments, rolls the latest migration down/up, runs Go race tests, lints/typechecks/tests/builds the frontend, validates Compose, and builds all deployable images.
@@ -180,4 +186,4 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 
 ## Deliberate boundaries
 
-Authentication is represented locally by the seeded `DEFAULT_ACTOR_ID`; arbitrary `X-Actor-ID` overrides are ignored unless `ALLOW_DEMO_ACTOR_OVERRIDE=true` is explicitly enabled for local multi-actor tests. `user_identities` provides the stable provider/subject boundary for a production OIDC/JWT gateway without coupling the take-home to an auth vendor. Global search and broker-backed fan-out remain documented extension points. The description CRDT, ephemeral collaboration room, notifications, reactions, activity projection, and board view are isolated so those additions do not force a rewrite of the core task model.
+Sessions contain only a random token whose SHA-256 digest is persisted. Active organization membership is required alongside project roles for every project read and mutation; project owners/admins manage memberships and viewers are read-only. The seeded `DEFAULT_ACTOR_ID` fallback and arbitrary `X-Actor-ID` overrides are development-only. `user_identities` remains the stable provider/subject boundary for a future production OIDC/JWT gateway without coupling the take-home to an auth vendor. Local attachments intentionally use filesystem storage; object storage, malware scanning, and external identity federation remain deployment concerns. Global search and broker-backed fan-out remain documented extension points. The description CRDT, ephemeral collaboration room, notifications, reactions, activity projection, and board view are isolated so those additions do not force a rewrite of the core task model.

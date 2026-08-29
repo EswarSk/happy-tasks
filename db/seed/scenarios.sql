@@ -25,9 +25,22 @@ INSERT INTO users (id, display_name, email, created_at) VALUES
     ('00000000-0000-7000-8000-000000000008', 'Omar Haddad', 'omar@example.test', '2026-08-20T14:07:00Z')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO projects (id, name, description, metadata, version, created_at, updated_at) VALUES
+UPDATE users
+SET password_hash = '$2a$10$PRAkSHebPVAcPzrNi9B5oe.nUjc3ZEyJdBf47pvpkg2jleyQCXYP.'
+WHERE id BETWEEN '00000000-0000-7000-8000-000000000001'::uuid AND '00000000-0000-7000-8000-000000000008'::uuid
+  AND password_hash IS NULL;
+
+INSERT INTO organization_members (organization_id, user_id, role)
+SELECT '00000000-0000-7000-8000-000000000100', id,
+       CASE WHEN id = '00000000-0000-7000-8000-000000000001'::uuid THEN 'OWNER' ELSE 'MEMBER' END
+FROM users
+WHERE id BETWEEN '00000000-0000-7000-8000-000000000001'::uuid AND '00000000-0000-7000-8000-000000000008'::uuid
+ON CONFLICT (organization_id, user_id) DO NOTHING;
+
+INSERT INTO projects (id, organization_id, name, description, metadata, version, created_at, updated_at) VALUES
     (
         '02000000-0000-7000-8000-000000000001',
+        '00000000-0000-7000-8000-000000000100',
         'Scale & Scenario Lab',
         'Ten-thousand-task workspace covering scale, collaboration, comments, filters, dependencies, conflicts, and UI edge cases.',
         '{"color":"amber","seed":"scenario-pack","fixture":true}',
@@ -37,6 +50,7 @@ INSERT INTO projects (id, name, description, metadata, version, created_at, upda
     ),
     (
         '02000000-0000-7000-8000-000000000002',
+        '00000000-0000-7000-8000-000000000100',
         'Empty Sandbox',
         'A deliberately empty project for loading, empty-state, first-task, and project-isolation tests.',
         '{"color":"slate","seed":"scenario-pack","fixture":true,"scenario":"empty"}',

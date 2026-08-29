@@ -133,6 +133,10 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
     void queryClient.invalidateQueries({ queryKey: ["tasks", event.projectId] });
     void queryClient.invalidateQueries({ queryKey: ["task", event.projectId] });
   }
+  if (event.type === "attachment.created" || event.type === "attachment.deleted") {
+    const taskId = String(payload.taskId ?? event.aggregateId ?? "");
+    if (taskId) void queryClient.invalidateQueries({ queryKey: ["attachments", event.projectId, taskId] });
+  }
 }
 
 export function useProjectEvents(projectId: string, startCursor: number, enabled: boolean) {
@@ -153,7 +157,8 @@ export function useProjectEvents(projectId: string, startCursor: number, enabled
       try {
         const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
         const response = await fetch(`${baseUrl}/v1/projects/${projectId}/events?after=${lastCursor.current}`, {
-          headers: { Accept: "text/event-stream", "X-Actor-ID": "00000000-0000-7000-8000-000000000001", "Last-Event-ID": String(lastCursor.current) },
+          credentials: "include",
+          headers: { Accept: "text/event-stream", "Last-Event-ID": String(lastCursor.current) },
           signal: controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`Event stream failed (${response.status})`);

@@ -39,6 +39,11 @@ func main() {
 		envBool("ALLOW_DEMO_ACTOR_OVERRIDE", false),
 		splitCSV(env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
 		logger,
+		httpapi.Config{
+			AuthRequired:   envBool("AUTH_REQUIRED", true),
+			SecureCookies:  envBool("AUTH_COOKIE_SECURE", false),
+			AttachmentsDir: env("ATTACHMENTS_DIR", ".data/attachments"),
+		},
 	)
 	server := &http.Server{
 		Addr:              ":" + env("PORT", "8080"),

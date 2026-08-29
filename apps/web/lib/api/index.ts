@@ -11,3 +11,4 @@ export const workspaceApi =
 export * from "./types";
 export type { components, operations, paths } from "./generated/openapi";
 export { demoActorId } from "./http-workspace-api";
+export { demoProjectId } from "./mock-workspace-api";

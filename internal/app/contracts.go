@@ -120,6 +120,18 @@ type UpdateTaskInput struct {
 	Tags         *[]string
 }
 
+type CreateAttachmentInput struct {
+	ID          string
+	ProjectID   string
+	TaskID      string
+	FileName    string
+	ContentType string
+	ByteSize    int64
+	Checksum    string
+	StorageKey  string
+	UploadedBy  string
+}
+
 type CreateCommentInput struct {
 	ID       string
 	ParentID *string
@@ -146,6 +158,8 @@ type Store interface {
 	PutIdempotency(context.Context, string, string, []byte, int, json.RawMessage) error
 
 	ActorExists(context.Context, string) (bool, error)
+	GetActiveOrganizationID(context.Context, string) (string, error)
+	IsUserInProjectOrganization(context.Context, string, string) (bool, error)
 	GetActiveMembership(context.Context, string, string) (domain.Membership, error)
 	AreProjectMembers(context.Context, string, []string) (bool, error)
 	LockOwnerInvariant(context.Context, string) error
@@ -155,7 +169,7 @@ type Store interface {
 	UpdateMembership(context.Context, string, string, domain.ProjectRole, domain.MembershipStatus, int64, string) (domain.Membership, error)
 	UnassignProjectMember(context.Context, string, string, string, string) ([]domain.AssignmentOperation, error)
 
-	CreateProject(context.Context, CreateProjectInput, string) (domain.Project, error)
+	CreateProject(context.Context, CreateProjectInput, string, string) (domain.Project, error)
 	InitProjectStream(context.Context, string) error
 
 	CreateTask(context.Context, string, CreateTaskInput, string) (domain.Task, error)
@@ -188,6 +202,8 @@ type Store interface {
 	CreateMentionNotifications(context.Context, string, string, string, string, string) ([]domain.Notification, error)
 	MarkNotificationRead(context.Context, string, string, string) (domain.Notification, error)
 	AppendEvent(context.Context, EventDraft) (domain.Event, error)
+	CreateAttachment(context.Context, CreateAttachmentInput) (domain.Attachment, error)
+	DeleteAttachment(context.Context, string, string, string) (domain.Attachment, error)
 }
 
 type Database interface {
@@ -202,6 +218,13 @@ type Database interface {
 	ListAssignmentOperations(context.Context, string, string, AssignmentFilter) ([]domain.AssignmentOperation, error)
 	ListNotifications(context.Context, string, string, bool, NotificationCursor, int) ([]domain.Notification, error)
 	GetTaskDescriptionDocument(context.Context, string, string) (domain.TaskDescriptionDocument, error)
+	ListAttachments(context.Context, string, string) ([]domain.Attachment, error)
+	GetAttachment(context.Context, string, string, string) (domain.Attachment, error)
+	CreateUser(context.Context, string, string, string) (domain.User, error)
+	GetAuthUser(context.Context, string) (domain.AuthUser, error)
+	CreateAuthSession(context.Context, string, []byte, time.Time) error
+	GetAuthSessionUser(context.Context, []byte) (domain.User, error)
+	DeleteAuthSession(context.Context, []byte) error
 	ListEvents(context.Context, string, int64, int) ([]domain.Event, error)
 	ProjectStreamCursor(context.Context, string) (int64, error)
 	Ping(context.Context) error

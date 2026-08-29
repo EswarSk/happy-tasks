@@ -1,6 +1,8 @@
 import type {
   AssignmentHistoryItem,
   ActivityItem,
+  Attachment,
+  AuthUser,
   Comment,
   CommentReaction,
   CommentReactionType,
@@ -86,13 +88,34 @@ export class HttpWorkspaceApi implements WorkspaceApi {
   constructor(private readonly baseUrl: string) {}
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const formData = typeof FormData !== "undefined" && init?.body instanceof FormData;
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", "X-Actor-ID": demoActorId, "X-Request-ID": newRequestId(), ...init?.headers },
+      credentials: "include",
+      headers: { ...(formData ? {} : { "Content-Type": "application/json" }), "X-Request-ID": newRequestId(), ...init?.headers },
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new WorkspaceApiError(response.status, body.error ?? { code: "REQUEST_FAILED", message: "The request could not be completed." });
     return body as T;
+  }
+
+  async login(email: string, password: string) {
+    const result = await this.request<{ user: AuthUser }>("/v1/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+    return result.user;
+  }
+
+  async register(displayName: string, email: string, password: string) {
+    const result = await this.request<{ user: AuthUser }>("/v1/auth/register", { method: "POST", body: JSON.stringify({ displayName, email, password }) });
+    return result.user;
+  }
+
+  async logout() {
+    await this.request<void>("/v1/auth/logout", { method: "POST" });
+  }
+
+  async me() {
+    const result = await this.request<{ user: AuthUser | null }>("/v1/auth/me");
+    return result.user;
   }
 
   async listProjects() {
@@ -269,5 +292,32 @@ export class HttpWorkspaceApi implements WorkspaceApi {
       method: "POST",
       headers: { "Idempotency-Key": newRequestId() },
     });
+  }
+
+  async listAttachments(projectId: string, taskId: string): Promise<Attachment[]> {
+    const result = await this.request<{ items: Attachment[] }>(`/v1/projects/${projectId}/tasks/${taskId}/attachments`);
+    return result.items;
+  }
+
+  async uploadAttachment(projectId: string, taskId: string, file: File): Promise<Attachment> {
+    const body = new FormData();
+    body.set("id", crypto.randomUUID());
+    body.set("file", file);
+    return this.request<Attachment>(`/v1/projects/${projectId}/tasks/${taskId}/attachments`, {
+      method: "POST",
+      headers: { "Idempotency-Key": newRequestId() },
+      body,
+    });
+  }
+
+  async deleteAttachment(projectId: string, taskId: string, attachmentId: string): Promise<Attachment> {
+    return this.request<Attachment>(`/v1/projects/${projectId}/tasks/${taskId}/attachments/${attachmentId}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": newRequestId() },
+    });
+  }
+
+  attachmentUrl(projectId: string, taskId: string, attachmentId: string) {
+    return `${this.baseUrl}/v1/projects/${projectId}/tasks/${taskId}/attachments/${attachmentId}`;
   }
 }

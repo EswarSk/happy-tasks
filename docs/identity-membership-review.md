@@ -5,8 +5,9 @@
 This note reviews the database boundary for soft member removal, authorization,
 ownership, identity deletion, and assignment history. The identity, membership,
 authorization, optimistic-concurrency, and assignment-history portions are now
-implemented. User anonymization and verified production authentication remain
-explicit follow-on work rather than being implied by the demo actor selector.
+implemented. User anonymization and external identity federation remain
+explicit follow-on work rather than being implied by the local email/password
+session.
 
 ## Recommended model
 

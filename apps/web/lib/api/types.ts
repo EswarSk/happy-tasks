@@ -9,12 +9,32 @@ export type CommentReactionType = "like" | "celebrate" | "insightful";
 
 export interface Project {
   id: string;
+  organizationId?: string;
   name: string;
   description: string;
   taskCount: number;
   updatedAt: string;
   accent: string;
   version: number;
+}
+
+export interface Attachment {
+  id: string;
+  projectId: string;
+  taskId: string;
+  fileName: string;
+  contentType: string;
+  byteSize: number;
+  checksum: string;
+  uploadedBy: string;
+  createdAt: string;
+}
+
+export interface AuthUser {
+  id: string;
+  displayName: string;
+  email: string;
+  status?: UserStatus;
 }
 
 export interface Member {
@@ -170,6 +190,10 @@ export class WorkspaceApiError extends Error {
 }
 
 export interface WorkspaceApi {
+  login(email: string, password: string): Promise<AuthUser>;
+  register(displayName: string, email: string, password: string): Promise<AuthUser>;
+  logout(): Promise<void>;
+  me(): Promise<AuthUser | null>;
   listProjects(): Promise<Project[]>;
   createProject(name: string, description: string): Promise<Project>;
   bootstrap(projectId: string): Promise<WorkspaceBootstrap>;
@@ -191,4 +215,8 @@ export interface WorkspaceApi {
   listActivity(projectId: string, after?: string): Promise<Page<ActivityItem>>;
   listNotifications(projectId: string, unreadOnly?: boolean, cursor?: string): Promise<Page<Notification>>;
   markNotificationRead(projectId: string, notificationId: string): Promise<Notification>;
+  listAttachments(projectId: string, taskId: string): Promise<Attachment[]>;
+  uploadAttachment(projectId: string, taskId: string, file: File): Promise<Attachment>;
+  deleteAttachment(projectId: string, taskId: string, attachmentId: string): Promise<Attachment>;
+  attachmentUrl(projectId: string, taskId: string, attachmentId: string): string;
 }

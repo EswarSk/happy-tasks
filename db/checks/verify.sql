@@ -11,12 +11,42 @@ BEGIN
             ('users'), ('projects'), ('project_members'), ('tasks'),
             ('task_assignees'), ('task_tags'), ('task_dependencies'),
             ('comments'), ('comment_reactions'), ('notifications'), ('project_streams'), ('sync_events'),
-            ('idempotency_keys')
+            ('idempotency_keys'), ('organizations'), ('organization_members'), ('auth_sessions'), ('task_attachments')
     ) AS expected(name)
     WHERE to_regclass('public.' || expected.name) IS NULL;
 
     IF missing_tables IS NOT NULL THEN
         RAISE EXCEPTION 'missing expected tables: %', missing_tables;
+    END IF;
+END
+$$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'projects_organization_fkey'
+          AND conrelid = 'projects'::regclass
+    ) THEN
+        RAISE EXCEPTION 'projects are missing organization isolation constraint';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_indexes
+        WHERE indexname = 'organization_members_user_active_idx'
+    ) THEN
+        RAISE EXCEPTION 'organization membership lookup index is missing';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'task_attachments_byte_size_check'
+          AND conrelid = 'task_attachments'::regclass
+    ) THEN
+        RAISE EXCEPTION 'attachment size constraint is missing';
     END IF;
 END
 $$;

@@ -67,6 +67,11 @@ type User struct {
 	UpdatedAt        *time.Time `json:"updatedAt,omitempty"`
 }
 
+type AuthUser struct {
+	User         User
+	PasswordHash string
+}
+
 type Membership struct {
 	ID        string           `json:"id"`
 	ProjectID string           `json:"projectId"`
@@ -94,14 +99,28 @@ type AssignmentOperation struct {
 }
 
 type Project struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Metadata    map[string]any `json:"metadata"`
-	TaskCount   int64          `json:"taskCount"`
-	Version     int64          `json:"version"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	UpdatedAt   time.Time      `json:"updatedAt"`
+	ID             string         `json:"id"`
+	OrganizationID string         `json:"organizationId"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description"`
+	Metadata       map[string]any `json:"metadata"`
+	TaskCount      int64          `json:"taskCount"`
+	Version        int64          `json:"version"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+}
+
+type Attachment struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"projectId"`
+	TaskID      string    `json:"taskId"`
+	FileName    string    `json:"fileName"`
+	ContentType string    `json:"contentType"`
+	ByteSize    int64     `json:"byteSize"`
+	Checksum    string    `json:"checksum"`
+	UploadedBy  string    `json:"uploadedBy"`
+	CreatedAt   time.Time `json:"createdAt"`
+	StorageKey  string    `json:"-"`
 }
 
 type Task struct {

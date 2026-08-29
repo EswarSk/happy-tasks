@@ -114,6 +114,30 @@ type AssignmentOperationPage struct {
 	NextCursor *string               `json:"nextCursor,omitempty"`
 }
 
+// Attachment defines model for Attachment.
+type Attachment struct {
+	ByteSize    int64              `json:"byteSize"`
+	Checksum    string             `json:"checksum"`
+	ContentType string             `json:"contentType"`
+	CreatedAt   time.Time          `json:"createdAt"`
+	FileName    string             `json:"fileName"`
+	Id          openapi_types.UUID `json:"id"`
+	ProjectId   openapi_types.UUID `json:"projectId"`
+	TaskId      openapi_types.UUID `json:"taskId"`
+	UploadedBy  openapi_types.UUID `json:"uploadedBy"`
+}
+
+// AttachmentPage defines model for AttachmentPage.
+type AttachmentPage struct {
+	Items      []Attachment `json:"items"`
+	NextCursor *string      `json:"nextCursor,omitempty"`
+}
+
+// AuthResponse defines model for AuthResponse.
+type AuthResponse struct {
+	User User `json:"user"`
+}
+
 // Bootstrap defines model for Bootstrap.
 type Bootstrap struct {
 	Members      []User   `json:"members"`
@@ -201,6 +225,13 @@ type CreateTask struct {
 	Title        string                  `json:"title"`
 }
 
+// Credentials defines model for Credentials.
+type Credentials struct {
+	DisplayName *string             `json:"displayName,omitempty"`
+	Email       openapi_types.Email `json:"email"`
+	Password    string              `json:"password"`
+}
+
 // Dependency defines model for Dependency.
 type Dependency struct {
 	Deleted         *bool              `json:"deleted,omitempty"`
@@ -272,14 +303,15 @@ type NotificationPage struct {
 
 // Project defines model for Project.
 type Project struct {
-	CreatedAt   time.Time              `json:"createdAt"`
-	Description string                 `json:"description"`
-	Id          openapi_types.UUID     `json:"id"`
-	Metadata    map[string]interface{} `json:"metadata"`
-	Name        string                 `json:"name"`
-	TaskCount   int64                  `json:"taskCount"`
-	UpdatedAt   time.Time              `json:"updatedAt"`
-	Version     int64                  `json:"version"`
+	CreatedAt      time.Time              `json:"createdAt"`
+	Description    string                 `json:"description"`
+	Id             openapi_types.UUID     `json:"id"`
+	Metadata       map[string]interface{} `json:"metadata"`
+	Name           string                 `json:"name"`
+	OrganizationId openapi_types.UUID     `json:"organizationId"`
+	TaskCount      int64                  `json:"taskCount"`
+	UpdatedAt      time.Time              `json:"updatedAt"`
+	Version        int64                  `json:"version"`
 }
 
 // ProjectPage defines model for ProjectPage.
@@ -592,6 +624,22 @@ type ListAssignmentHistoryParams struct {
 	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
 }
 
+// UploadTaskAttachmentMultipartBody defines parameters for UploadTaskAttachment.
+type UploadTaskAttachmentMultipartBody struct {
+	File openapi_types.File  `json:"file"`
+	Id   *openapi_types.UUID `json:"id,omitempty"`
+}
+
+// UploadTaskAttachmentParams defines parameters for UploadTaskAttachment.
+type UploadTaskAttachmentParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// DeleteTaskAttachmentParams defines parameters for DeleteTaskAttachment.
+type DeleteTaskAttachmentParams struct {
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
 // ListCommentsParams defines parameters for ListComments.
 type ListCommentsParams struct {
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
@@ -670,6 +718,12 @@ type UndoTaskMetadataParams struct {
 	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
 }
 
+// LoginJSONRequestBody defines body for Login for application/json ContentType.
+type LoginJSONRequestBody = Credentials
+
+// RegisterJSONRequestBody defines body for Register for application/json ContentType.
+type RegisterJSONRequestBody = Credentials
+
 // CreateProjectJSONRequestBody defines body for CreateProject for application/json ContentType.
 type CreateProjectJSONRequestBody = CreateProject
 
@@ -684,6 +738,9 @@ type CreateTaskJSONRequestBody = CreateTask
 
 // UpdateTaskJSONRequestBody defines body for UpdateTask for application/json ContentType.
 type UpdateTaskJSONRequestBody = UpdateTask
+
+// UploadTaskAttachmentMultipartRequestBody defines body for UploadTaskAttachment for multipart/form-data ContentType.
+type UploadTaskAttachmentMultipartRequestBody UploadTaskAttachmentMultipartBody
 
 // CreateCommentJSONRequestBody defines body for CreateComment for application/json ContentType.
 type CreateCommentJSONRequestBody = CreateComment

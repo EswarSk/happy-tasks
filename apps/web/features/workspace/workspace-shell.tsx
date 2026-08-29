@@ -22,7 +22,7 @@ import { TaskDetailPanel } from "@/features/tasks/task-detail-panel";
 import { TaskList } from "@/features/tasks/task-list";
 import { TaskBoard } from "@/features/tasks/task-board";
 import { useProjectEvents } from "@/features/realtime/use-project-events";
-import { dataSource, demoActorId, type ConnectionState, type Project, type TaskFilters, type TaskPriority, type TaskStatus, workspaceApi } from "@/lib/api";
+import { dataSource, demoActorId, type ConnectionState, type Project, type TaskFilters, type TaskPriority, type TaskStatus, WorkspaceApiError, workspaceApi } from "@/lib/api";
 
 interface WorkspaceShellProps { projectId: string; selectedTaskId?: string; showActivity?: boolean }
 
@@ -42,6 +42,7 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
   const showDebugMetadata = process.env.NEXT_PUBLIC_DEBUG_UI === "true";
   const bootstrap = useQuery({ queryKey: ["bootstrap", projectId], queryFn: () => workspaceApi.bootstrap(projectId) });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => workspaceApi.listProjects() });
+  const authUserQuery = useQuery({ queryKey: ["auth-me"], queryFn: () => workspaceApi.me(), enabled: dataSource === "api" });
   const realtimeState = useProjectEvents(projectId, bootstrap.data?.streamCursor ?? 0, dataSource === "api" && Boolean(bootstrap.data));
   const presence = useProjectPresence(projectId, selectedTaskId, Boolean(bootstrap.data));
   const displayedConnection = dataSource === "api" ? realtimeState : connection;
@@ -122,13 +123,14 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
     return <div className="flex h-dvh gap-3 bg-[var(--background)] p-3"><div className="hidden w-[260px] animate-pulse rounded-xl border border-[var(--border)] bg-[var(--skeleton)] lg:block" /><main className="flex-1"><div className="h-[110px] animate-pulse rounded-xl bg-[var(--skeleton)]" /><div className="mt-3 h-[calc(100%-122px)] animate-pulse rounded-xl bg-[var(--skeleton)]" /></main></div>;
   }
   if (!bootstrap.data) {
-    return <div className="grid h-dvh place-items-center bg-[var(--background)]"><div className="text-center"><h1 className="font-semibold">Project unavailable</h1><p className="mt-1 text-sm text-[var(--text-secondary)]">The workspace could not be bootstrapped.</p><Button variant="secondary" className="mt-4" onClick={() => bootstrap.refetch()}>Try again</Button></div></div>;
+    const requiresSignIn = bootstrap.error instanceof WorkspaceApiError && bootstrap.error.status === 401;
+    return <div className="grid h-dvh place-items-center bg-[var(--background)]"><div className="text-center"><h1 className="font-semibold">{requiresSignIn ? "Sign in to continue" : "Project unavailable"}</h1><p className="mt-1 text-sm text-[var(--text-secondary)]">{requiresSignIn ? "Your session is missing or expired." : "The workspace could not be bootstrapped."}</p><div className="mt-4 flex justify-center gap-2">{requiresSignIn && <Button onClick={() => router.push("/login")}>Sign in</Button>}<Button variant="secondary" onClick={() => bootstrap.refetch()}>Try again</Button></div></div></div>;
   }
 
   const { project, members } = bootstrap.data;
   const availableProjects: Project[] = [project, ...(projectsQuery.data ?? []).filter((item) => item.id !== project.id)];
   const selectedCreateProject = availableProjects.find((item) => item.id === createProjectId) ?? project;
-  const currentActor = members.find((member) => member.id === demoActorId) ?? members.find((member) => member.role === "OWNER") ?? members[0];
+  const currentActor = members.find((member) => member.id === (authUserQuery.data?.id ?? demoActorId)) ?? members.find((member) => member.role === "OWNER") ?? members[0];
   const taskList = view === "board" ? <TaskBoard projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} /> : <TaskList projectId={projectId} filters={filters} members={members} selectedTaskId={selectedTaskId} onOpenTask={openTask} />;
   const detailExpanded = Boolean(selectedTaskId && expandedDetailTaskId === selectedTaskId);
   const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} collaborators={presence.collaborators} onSelectionChange={presence.updateSelection} onClose={closeTask} onOpenTask={openTask} onToggleExpand={toggleDetailPanel} detailExpanded={detailExpanded} /> : null;

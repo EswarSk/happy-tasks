@@ -7,6 +7,7 @@ servers:
   - url: http://localhost:8080
 tags:
   - name: Health
+  - name: Authentication
   - name: Projects
   - name: Memberships
   - name: Tasks
@@ -36,6 +37,59 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Health"}
         "503": {$ref: "#/components/responses/Error"}
+  /v1/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Credentials"}
+      responses:
+        "201":
+          description: Account created and authenticated with an HttpOnly session cookie.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuthResponse"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Credentials"}
+      responses:
+        "200":
+          description: Authenticated with an HttpOnly session cookie.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuthResponse"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      responses:
+        "204": {description: Session ended.}
+  /v1/auth/me:
+    get:
+      tags: [Authentication]
+      operationId: me
+      responses:
+        "200":
+          description: Current session user, or null in local demo mode.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: {$ref: "#/components/schemas/User"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects:
     get:
       tags: [Projects]
@@ -502,6 +556,68 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/CommentReaction"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/attachments:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+    get:
+      tags: [Tasks]
+      operationId: listTaskAttachments
+      responses:
+        "200":
+          description: Files attached to the task.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AttachmentPage"}
+        default: {$ref: "#/components/responses/Error"}
+    post:
+      tags: [Tasks]
+      operationId: uploadTaskAttachment
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                id: {type: string, format: uuid}
+                file: {type: string, format: binary}
+      responses:
+        "201":
+          description: File metadata created. The binary is stored separately from task JSON.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Attachment"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/attachments/{attachmentId}:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - name: attachmentId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [Tasks]
+      operationId: downloadTaskAttachment
+      responses:
+        "200": {description: Authenticated file download.}
+        default: {$ref: "#/components/responses/Error"}
+    delete:
+      tags: [Tasks]
+      operationId: deleteTaskAttachment
+      parameters:
+        - {$ref: "#/components/parameters/IdempotencyKey"}
+      responses:
+        "200":
+          description: File metadata deleted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Attachment"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/events:
     parameters:
       - {$ref: "#/components/parameters/ProjectId"}
@@ -678,6 +794,18 @@ components:
       required: [status]
       properties:
         status: {type: string}
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        displayName: {type: string, maxLength: 120}
+        email: {type: string, format: email, maxLength: 320}
+        password: {type: string, minLength: 8, maxLength: 128, format: password}
+    AuthResponse:
+      type: object
+      required: [user]
+      properties:
+        user: {$ref: "#/components/schemas/User"}
     TaskStatus:
       type: string
       enum: [TODO, IN_PROGRESS, BLOCKED, DONE]
@@ -686,9 +814,10 @@ components:
       enum: [LOW, MEDIUM, HIGH, URGENT]
     Project:
       type: object
-      required: [id, name, description, metadata, taskCount, version, createdAt, updatedAt]
+      required: [id, organizationId, name, description, metadata, taskCount, version, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
+        organizationId: {type: string, format: uuid}
         name: {type: string, minLength: 1, maxLength: 200}
         description: {type: string}
         metadata: {type: object, additionalProperties: true}
@@ -787,6 +916,27 @@ components:
         items:
           type: array
           items: {$ref: "#/components/schemas/Task"}
+        nextCursor: {type: string}
+    Attachment:
+      type: object
+      required: [id, projectId, taskId, fileName, contentType, byteSize, checksum, uploadedBy, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        fileName: {type: string, maxLength: 255}
+        contentType: {type: string, maxLength: 150}
+        byteSize: {type: integer, format: int64, minimum: 1, maximum: 26214400}
+        checksum: {type: string, pattern: '^[0-9a-f]{64}$'}
+        uploadedBy: {type: string, format: uuid}
+        createdAt: {type: string, format: date-time}
+    AttachmentPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/Attachment"}
         nextCursor: {type: string}
     TaskTombstone:
       type: object

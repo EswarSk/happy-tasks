@@ -3,12 +3,16 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +27,7 @@ import (
 )
 
 const maxRequestBody = 1 << 20
+const maxAttachmentBytes = 25 << 20
 
 type Handler struct {
 	service            *app.Service
@@ -34,14 +39,29 @@ type Handler struct {
 	allowedOrigins     map[string]struct{}
 	logger             *slog.Logger
 	rateLimiter        *rateLimiter
+	authRequired       bool
+	secureCookies      bool
+	attachmentsDir     string
 }
 
-func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger) http.Handler {
+type Config struct {
+	AuthRequired   bool
+	SecureCookies  bool
+	AttachmentsDir string
+}
+
+type authUserKey struct{}
+
+func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger, config Config) http.Handler {
 	originSet := make(map[string]struct{}, len(allowedOrigins))
 	for _, origin := range allowedOrigins {
 		originSet[strings.TrimSuffix(origin, "/")] = struct{}{}
 	}
-	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter()}
+	if config.AttachmentsDir == "" {
+		config.AttachmentsDir = ".data/attachments"
+	}
+	_ = os.MkdirAll(config.AttachmentsDir, 0o700)
+	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter(), authRequired: config.AuthRequired, secureCookies: config.SecureCookies, attachmentsDir: config.AttachmentsDir}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -60,6 +80,11 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 	router.Get("/health/ready", h.ready)
 	router.Route("/v1", func(r chi.Router) {
 		r.Use(h.rateLimit)
+		r.Use(h.authenticate)
+		r.Post("/auth/register", h.register)
+		r.Post("/auth/login", h.login)
+		r.Post("/auth/logout", h.logout)
+		r.Get("/auth/me", h.authMe)
 		r.Get("/projects", h.listProjects)
 		r.Post("/projects", h.createProject)
 		r.Route("/projects/{projectId}", func(r chi.Router) {
@@ -90,6 +115,10 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 				r.Put("/comments/{commentId}/reaction", h.setCommentReaction)
 				r.Delete("/comments/{commentId}/reaction", h.removeCommentReaction)
 				r.Get("/assignment-history", h.listAssignmentHistory)
+				r.Get("/attachments", h.listAttachments)
+				r.Post("/attachments", h.uploadAttachment)
+				r.Get("/attachments/{attachmentId}", h.downloadAttachment)
+				r.Delete("/attachments/{attachmentId}", h.deleteAttachment)
 			})
 		})
 	})
@@ -151,6 +180,95 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+type credentialsRequest struct {
+	DisplayName string `json:"displayName"`
+	Email       string `json:"email"`
+	Password    string `json:"password"`
+}
+
+func (h *Handler) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if cookie, err := r.Cookie("happy_tasks_session"); err == nil && cookie.Value != "" {
+			user, sessionErr := h.service.SessionUser(r.Context(), cookie.Value)
+			if sessionErr == nil {
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authUserKey{}, user)))
+				return
+			}
+		}
+		if h.authRequired {
+			h.writeError(w, r, domain.Validation("UNAUTHENTICATED", "Sign in is required.", nil))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	var request credentialsRequest
+	if _, ok := h.decode(w, r, &request); !ok {
+		return
+	}
+	user, token, err := h.service.Register(r.Context(), request.DisplayName, request.Email, request.Password)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	h.setSessionCookie(w, token)
+	writeJSON(w, http.StatusCreated, map[string]any{"user": user})
+}
+
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	var request credentialsRequest
+	if _, ok := h.decode(w, r, &request); !ok {
+		return
+	}
+	user, token, err := h.service.Login(r.Context(), request.Email, request.Password)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	h.setSessionCookie(w, token)
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("happy_tasks_session"); err == nil {
+		if err := h.service.Logout(r.Context(), cookie.Value); err != nil {
+			h.writeError(w, r, err)
+			return
+		}
+	}
+	h.clearSessionCookie(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) authMe(w http.ResponseWriter, r *http.Request) {
+	if user, ok := r.Context().Value(authUserKey{}).(domain.User); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"user": user})
+		return
+	}
+	if cookie, err := r.Cookie("happy_tasks_session"); err == nil {
+		if user, sessionErr := h.service.SessionUser(r.Context(), cookie.Value); sessionErr == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"user": user})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": nil})
+}
+
+func (h *Handler) setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Value: token, Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: 30 * 24 * 60 * 60})
+}
+
+func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 }
 
 func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
@@ -390,6 +508,209 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", etag(task.Version))
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListAttachments(r.Context(), h.actorID(r), projectID, taskID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	for index := range items {
+		items[index].StorageKey = ""
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) uploadAttachment(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+1<<20)
+	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		h.writeError(w, r, domain.Validation("PAYLOAD_TOO_LARGE", "The uploaded file is too large or malformed.", nil))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		h.writeError(w, r, domain.Validation("VALIDATION_ERROR", "A file is required.", nil))
+		return
+	}
+	defer file.Close()
+
+	fileName := strings.TrimSpace(strings.ReplaceAll(header.Filename, "\x00", ""))
+	fileName = filepath.Base(strings.ReplaceAll(fileName, "\\", "/"))
+	if fileName == "." || fileName == "" || len(fileName) > 255 {
+		h.writeError(w, r, domain.Validation("VALIDATION_ERROR", "The file name is invalid.", nil))
+		return
+	}
+	declaredType := strings.TrimSpace(header.Header.Get("Content-Type"))
+	if parsed, _, parseErr := mime.ParseMediaType(declaredType); parseErr == nil {
+		declaredType = parsed
+	}
+
+	temp, err := os.CreateTemp(h.attachmentsDir, ".upload-*")
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	digest := sha256.New()
+	head := make([]byte, 512)
+	readCount, readErr := file.Read(head)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		_ = temp.Close()
+		h.writeError(w, r, readErr)
+		return
+	}
+	if declaredType == "" && readCount > 0 {
+		declaredType = http.DetectContentType(head[:readCount])
+	}
+	written := int64(0)
+	if readCount > 0 {
+		if _, err := io.MultiWriter(temp, digest).Write(head[:readCount]); err != nil {
+			_ = temp.Close()
+			h.writeError(w, r, err)
+			return
+		}
+		written = int64(readCount)
+	}
+	copyErr := error(nil)
+	if written <= maxAttachmentBytes {
+		var copied int64
+		copied, copyErr = io.Copy(io.MultiWriter(temp, digest), io.LimitReader(file, maxAttachmentBytes+1-written))
+		written += copied
+	}
+	if closeErr := temp.Close(); copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		h.writeError(w, r, copyErr)
+		return
+	}
+	if written < 1 || written > maxAttachmentBytes {
+		h.writeError(w, r, domain.Validation("PAYLOAD_TOO_LARGE", "Each file must be between 1 byte and 25 MB.", nil))
+		return
+	}
+	if !allowedAttachmentType(declaredType) {
+		h.writeError(w, r, domain.Validation("UNSUPPORTED_FILE_TYPE", "Only common documents and images can be uploaded.", nil))
+		return
+	}
+
+	attachmentID := strings.TrimSpace(r.FormValue("id"))
+	if attachmentID == "" {
+		attachmentID = uuid.Must(uuid.NewV7()).String()
+	}
+	if !validUUID(attachmentID) {
+		h.validationError(w, r, "id", "must be a UUID")
+		return
+	}
+	storagePath := filepath.Join(h.attachmentsDir, attachmentID)
+	if _, statErr := os.Stat(storagePath); statErr == nil {
+		h.writeError(w, r, domain.Validation("ALREADY_EXISTS", "That attachment already exists.", nil))
+		return
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		h.writeError(w, r, statErr)
+		return
+	}
+	if err := os.Rename(tempPath, storagePath); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	digestHex := hex.EncodeToString(digest.Sum(nil))
+	meta := h.mutationMeta(r, []byte(strings.Join([]string{attachmentID, fileName, declaredType, strconv.FormatInt(written, 10), digestHex}, "\n")))
+	result, err := h.service.CreateAttachment(r.Context(), meta, app.CreateAttachmentInput{
+		ID: attachmentID, ProjectID: projectID, TaskID: taskID, FileName: fileName,
+		ContentType: declaredType, ByteSize: written, Checksum: digestHex, StorageKey: attachmentID,
+	})
+	if err != nil || result.Replayed {
+		if !result.Replayed {
+			_ = os.Remove(storagePath)
+		}
+		if err != nil {
+			h.writeError(w, r, err)
+			return
+		}
+	}
+	result.Value.StorageKey = ""
+	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func (h *Handler) downloadAttachment(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	attachmentID, ok := pathUUID(w, r, "attachmentId")
+	if !ok {
+		return
+	}
+	attachment, err := h.service.GetAttachment(r.Context(), h.actorID(r), projectID, taskID, attachmentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	if filepath.Base(attachment.StorageKey) != attachment.StorageKey {
+		h.writeError(w, r, errors.New("invalid attachment storage key"))
+		return
+	}
+	w.Header().Set("Content-Type", attachment.ContentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeHeaderFilename(attachment.FileName)))
+	http.ServeFile(w, r, filepath.Join(h.attachmentsDir, attachment.StorageKey))
+}
+
+func (h *Handler) deleteAttachment(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	attachmentID, ok := pathUUID(w, r, "attachmentId")
+	if !ok {
+		return
+	}
+	result, err := h.service.DeleteAttachment(r.Context(), h.mutationMeta(r, nil), projectID, taskID, attachmentID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	if result.Value.StorageKey != "" {
+		_ = os.Remove(filepath.Join(h.attachmentsDir, filepath.Base(result.Value.StorageKey)))
+	}
+	result.Value.StorageKey = ""
+	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
+}
+
+func allowedAttachmentType(value string) bool {
+	switch value {
+	case "application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"text/plain", "text/markdown", "image/jpeg", "image/png", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeHeaderFilename(value string) string {
+	value = filepath.Base(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == '"' || r == '\\' {
+			return '-'
+		}
+		return r
+	}, value)
+	if value == "" {
+		return "download"
+	}
+	return value
 }
 
 func (h *Handler) createTask(w http.ResponseWriter, r *http.Request) {
@@ -848,6 +1169,9 @@ func (h *Handler) actorID(r *http.Request) string {
 	if value := r.Header.Get("X-Actor-ID"); h.allowActorOverride && validUUID(value) {
 		return value
 	}
+	if user, ok := r.Context().Value(authUserKey{}).(domain.User); ok {
+		return user.ID
+	}
 	return h.defaultActorID
 }
 
@@ -922,6 +1246,10 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 			status = http.StatusPreconditionRequired
 		case "DATABASE_UNAVAILABLE":
 			status = http.StatusServiceUnavailable
+		case "UNAUTHENTICATED", "INVALID_CREDENTIALS":
+			status = http.StatusUnauthorized
+		case "PAYLOAD_TOO_LARGE":
+			status = http.StatusRequestEntityTooLarge
 		case "RATE_LIMITED":
 			status = http.StatusTooManyRequests
 		case "VALIDATION_ERROR", "INVALID_JSON", "IDEMPOTENCY_KEY_REQUIRED":

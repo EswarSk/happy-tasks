@@ -2,7 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Check, ChevronRight, Copy, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Redo2, Save, Search, Trash2, Undo2, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronRight, Copy, FileText, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Paperclip, Redo2, Save, Search, Trash2, Undo2, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -79,6 +79,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
     queryFn: () => workspaceApi.listTasks(projectId, { limit: 100, search: dependencySearch }),
     enabled: Boolean(task),
   });
+  const attachmentsQuery = useQuery({ queryKey: ["attachments", projectId, taskId], queryFn: () => workspaceApi.listAttachments(projectId, taskId), enabled: Boolean(task) });
 
   const dependencyMutation = useMutation({
     mutationFn: (dependencyTaskId: string) => workspaceApi.addDependency(projectId, taskId, dependencyTaskId),
@@ -115,6 +116,20 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
       if (error instanceof WorkspaceApiError && error.status === 409) setConflictOpen(true);
       else toast.error(error instanceof Error ? error.message : "Task could not be deleted");
     },
+  });
+
+  const uploadAttachment = useMutation({
+    mutationFn: (file: File) => {
+      if (file.size > 25 * 1024 * 1024) throw new Error("Each file must be 25 MB or smaller.");
+      return workspaceApi.uploadAttachment(projectId, taskId, file);
+    },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["attachments", projectId, taskId] }); toast.success("File attached"); },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "File could not be attached"),
+  });
+  const deleteAttachment = useMutation({
+    mutationFn: (attachmentId: string) => workspaceApi.deleteAttachment(projectId, taskId, attachmentId),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["attachments", projectId, taskId] }); toast.success("File removed"); },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "File could not be removed"),
   });
 
   const undoTask = useMutation({
@@ -209,6 +224,14 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
             </>}
           </section>
 
+          <section aria-labelledby="attachments-heading" className="border-b border-[var(--border-subtle)] py-5">
+            <div className="flex items-center justify-between"><h2 id="attachments-heading" className="section-label">Files</h2><label className="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--hover)]"><Paperclip className="size-3.5" />Attach<input type="file" className="sr-only" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md" disabled={uploadAttachment.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadAttachment.mutate(file); event.currentTarget.value = ""; }} /></label></div>
+            <div className="mt-3 space-y-2">
+              {attachmentsQuery.data?.map((attachment) => <div key={attachment.id} className="flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2"><FileText className="size-4 shrink-0 text-[var(--text-muted)]" /><a href={workspaceApi.attachmentUrl(projectId, taskId, attachment.id)} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-xs font-medium underline-offset-2 hover:underline">{attachment.fileName}<span className="ml-1 font-normal text-[var(--text-muted)]">{formatBytes(attachment.byteSize)}</span></a><Button type="button" variant="ghost" size="icon" className="size-7" aria-label={`Remove ${attachment.fileName}`} disabled={deleteAttachment.isPending} onClick={() => deleteAttachment.mutate(attachment.id)}><X className="size-3.5" /></Button></div>)}
+              {!attachmentsQuery.isLoading && !attachmentsQuery.data?.length && <p className="text-xs text-[var(--text-muted)]">Attach a document or photo. Files can be up to 25 MB.</p>}
+            </div>
+          </section>
+
           <section aria-labelledby="dependencies-heading" className="border-b border-[var(--border-subtle)] py-5">
             <div className="flex items-center justify-between"><h2 id="dependencies-heading" className="section-label">Dependencies</h2><Link2 className="size-4 text-[var(--text-muted)]" /></div>
             <div className="mt-3 space-y-2">
@@ -249,4 +272,10 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
       </Dialog>
     </section>
   );
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }

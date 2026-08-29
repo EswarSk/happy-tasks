@@ -8,9 +8,26 @@ INSERT INTO users (id, display_name, email, created_at) VALUES
     ('00000000-0000-7000-8000-000000000003', 'Priya Shah', 'priya@example.test', '2026-08-20T14:02:00Z')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO projects (id, name, description, metadata, version, created_at, updated_at) VALUES
+UPDATE users
+SET password_hash = '$2a$10$PRAkSHebPVAcPzrNi9B5oe.nUjc3ZEyJdBf47pvpkg2jleyQCXYP.'
+WHERE id IN ('00000000-0000-7000-8000-000000000001', '00000000-0000-7000-8000-000000000002', '00000000-0000-7000-8000-000000000003')
+  AND password_hash IS NULL;
+
+INSERT INTO organization_members (organization_id, user_id, role)
+SELECT '00000000-0000-7000-8000-000000000100', id,
+       CASE WHEN id = '00000000-0000-7000-8000-000000000001'::uuid THEN 'OWNER' ELSE 'MEMBER' END
+FROM users
+WHERE id IN (
+    '00000000-0000-7000-8000-000000000001',
+    '00000000-0000-7000-8000-000000000002',
+    '00000000-0000-7000-8000-000000000003'
+)
+ON CONFLICT (organization_id, user_id) DO NOTHING;
+
+INSERT INTO projects (id, organization_id, name, description, metadata, version, created_at, updated_at) VALUES
     (
         '01000000-0000-7000-8000-000000000001',
+        '00000000-0000-7000-8000-000000000100',
         'Realtime Launch',
         'Ship a reliable collaborative task workspace.',
         '{"color":"indigo","team":"Platform"}',
@@ -20,6 +37,7 @@ INSERT INTO projects (id, name, description, metadata, version, created_at, upda
     ),
     (
         '01000000-0000-7000-8000-000000000002',
+        '00000000-0000-7000-8000-000000000100',
         'Mobile Experience',
         'Plan the responsive workspace and offline states.',
         '{"color":"emerald","team":"Product"}',

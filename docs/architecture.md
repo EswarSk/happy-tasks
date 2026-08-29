@@ -74,8 +74,8 @@ The implementation does not call ordinary version-conflict handling a CRDT. CRDT
 
 ### 3.2 Non-goals for the two-day build
 
-- Production authentication, billing, organization administration, or granular RBAC.
-- General offline-first behavior.
+- Billing, organization administration UI, or granular RBAC beyond organization membership plus project roles.
+- Offline-first mutation queues; the PWA provides an installable shell and safe offline fallback.
 - General-purpose event sourcing. Current relational rows remain authoritative.
 - General-purpose rich-text/block CRDT beyond the description document.
 - Microservices, Kubernetes, Kafka, Redis, or multi-region active-active writes.
@@ -231,6 +231,23 @@ selector. Local requests resolve to `DEFAULT_ACTOR_ID`; arbitrary
 explicitly enabled for multi-actor tests. The `user_identities`
 provider/subject table is the seam for a verified OIDC/JWT gateway in
 production, without coupling the assignment to an auth vendor.
+
+Authentication is enabled by default in Compose with bcrypt password hashes and
+random HttpOnly session cookies. `AUTH_REQUIRED=false` is reserved for a
+deliberately unauthenticated local demo; the seeded actor fallback remains
+explicitly local-only. New accounts receive an organization membership and a
+starter project.
+
+#### Organizations and files
+
+`organizations` and `organization_members` sit beneath the existing
+`project_members` roles. Every project belongs to one organization, and all
+project reads, project creation, and membership invitations require an active
+organization membership. `task_attachments` stores file metadata and a
+SHA-256 checksum while the binary lives under `ATTACHMENTS_DIR`. The 25 MB
+per-file limit is enforced by the transport, service, and database; a project
+can still grow beyond 2 MB because task pages and event payloads remain
+bounded.
 
 #### `projects`
 
@@ -759,7 +776,9 @@ Backups, point-in-time recovery, and multi-AZ PostgreSQL are deployment responsi
 
 ## 15. Security
 
-The assignment does not require authentication. The take-home uses seeded identities with an explicit `DEMO_AUTH=true` development mode; the README must state that this is not production authentication.
+The assignment does not require authentication, but the implementation ships
+with an enforced email/password session boundary by default. The explicit
+`AUTH_REQUIRED=false` local fallback is not production authentication.
 
 Implement now:
 
@@ -773,7 +792,10 @@ Implement now:
 - Run containers as non-root users and pin dependency versions/lockfiles.
 - Keep secrets in environment variables and provide only `.env.example`.
 
-Production additions are OIDC/session authentication, organization-scoped RBAC, CSRF protection for cookie mutations, audit-retention policy, secret management, TLS at the edge, and optional PostgreSQL row-level security as defense in depth.
+Production additions beyond this take-home are OIDC/SSO federation, CSRF
+protection for cookie mutations, audit-retention policy, secret management,
+TLS at the edge, and optional PostgreSQL row-level security as defense in
+depth.
 
 ## 16. Testing strategy
 

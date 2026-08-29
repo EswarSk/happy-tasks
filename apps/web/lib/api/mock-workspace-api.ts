@@ -1,6 +1,8 @@
 import type {
   AssignmentHistoryItem,
   ActivityItem,
+  Attachment,
+  AuthUser,
   Comment,
   CommentReaction,
   CommentReactionType,
@@ -116,6 +118,7 @@ interface MockStore {
   notifications: Map<string, Notification[]>;
   assignmentHistory: Map<string, AssignmentHistoryItem[]>;
   operations: Map<string, MockTaskOperation[]>;
+  attachments: Map<string, Attachment[]>;
 }
 
 interface MockTaskOperation {
@@ -133,7 +136,7 @@ declare global {
 
 function store(): MockStore {
   if (!globalThis.__happyTaskMockStore) {
-    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), reactions: new Map(), activity: new Map(), notifications: new Map(), assignmentHistory: new Map(), operations: new Map() };
+    globalThis.__happyTaskMockStore = { tasks: new Map(), comments: new Map(), reactions: new Map(), activity: new Map(), notifications: new Map(), assignmentHistory: new Map(), operations: new Map(), attachments: new Map() };
   }
   // Preserve hot-reload compatibility with a store created before assignment history existed.
   globalThis.__happyTaskMockStore.assignmentHistory ??= new Map();
@@ -141,6 +144,7 @@ function store(): MockStore {
   globalThis.__happyTaskMockStore.reactions ??= new Map();
   globalThis.__happyTaskMockStore.activity ??= new Map();
   globalThis.__happyTaskMockStore.notifications ??= new Map();
+  globalThis.__happyTaskMockStore.attachments ??= new Map();
   return globalThis.__happyTaskMockStore;
 }
 
@@ -225,6 +229,22 @@ function offsetFromCursor(cursor?: string) {
 }
 
 export class MockWorkspaceApi implements WorkspaceApi {
+  async login(): Promise<AuthUser> {
+    await delay(120);
+    return { id: demoMembers[0].id, displayName: demoMembers[0].displayName, email: demoMembers[0].email, status: "ACTIVE" };
+  }
+
+  async register(displayName: string, email: string): Promise<AuthUser> {
+    await delay(120);
+    return { id: demoMembers[0].id, displayName: displayName || demoMembers[0].displayName, email: email || demoMembers[0].email, status: "ACTIVE" };
+  }
+
+  async logout() { await delay(60); }
+
+  async me(): Promise<AuthUser> {
+    return { id: demoMembers[0].id, displayName: demoMembers[0].displayName, email: demoMembers[0].email, status: "ACTIVE" };
+  }
+
   async listProjects() {
     await delay(120);
     return structuredClone(projects);
@@ -545,4 +565,26 @@ export class MockWorkspaceApi implements WorkspaceApi {
     notification.readAt = new Date().toISOString();
     return structuredClone(notification);
   }
+
+  async listAttachments(projectId: string, taskId: string) {
+    return structuredClone(store().attachments.get(`${projectId}:${taskId}`) ?? []);
+  }
+
+  async uploadAttachment(projectId: string, taskId: string, file: File) {
+    const item: Attachment = { id: crypto.randomUUID(), projectId, taskId, fileName: file.name, contentType: file.type || "application/octet-stream", byteSize: file.size, checksum: "", uploadedBy: demoMembers[0].id, createdAt: new Date().toISOString() };
+    const key = `${projectId}:${taskId}`;
+    store().attachments.set(key, [item, ...(store().attachments.get(key) ?? [])]);
+    return structuredClone(item);
+  }
+
+  async deleteAttachment(projectId: string, taskId: string, attachmentId: string) {
+    const key = `${projectId}:${taskId}`;
+    const items = store().attachments.get(key) ?? [];
+    const item = items.find((attachment) => attachment.id === attachmentId);
+    if (!item) throw new WorkspaceApiError(404, { code: "NOT_FOUND", message: "Attachment not found." });
+    store().attachments.set(key, items.filter((attachment) => attachment.id !== attachmentId));
+    return structuredClone(item);
+  }
+
+  attachmentUrl() { return "#"; }
 }

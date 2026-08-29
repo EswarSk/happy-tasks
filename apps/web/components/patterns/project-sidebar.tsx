@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Boxes, ChevronDown, ChevronsLeft, ListTodo, Plus, Search, Settings2, Star, UserRound } from "lucide-react";
+import { Activity, Boxes, ChevronDown, ChevronsLeft, ListTodo, LogOut, Plus, Search, Settings2, Star, UserRound } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -59,6 +59,7 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Project could not be created"),
   });
+  const logout = useMutation({ mutationFn: () => workspaceApi.logout(), onSuccess: () => router.push("/login"), onError: (error) => toast.error(error instanceof Error ? error.message : "Could not sign out") });
 
   const openGlobalSearch = () => {
     setGlobalSearch("");
@@ -123,9 +124,10 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
       <div className="border-t border-[var(--border)] p-3">
         <button type="button" className={cn("flex min-h-11 w-full items-center rounded-md text-left outline-none hover:bg-[var(--hover)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} title={isCollapsed ? currentActor?.displayName ?? "Demo user" : undefined}>
           <Avatar name={currentActor?.displayName ?? "Maya Chen"} color={currentActor?.color} />
-          {!isCollapsed && <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{currentActor?.displayName ?? "Maya Chen"}</span><span className="block text-[11px] text-[var(--text-muted)]">Demo user</span></span>}
+          {!isCollapsed && <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{currentActor?.displayName ?? "Maya Chen"}</span><span className="block truncate text-[11px] text-[var(--text-muted)]">{currentActor?.email ?? ""}</span></span>}
           {!isCollapsed && <ChevronDown className="size-3.5 text-[var(--text-muted)]" />}
         </button>
+        <Button type="button" variant="ghost" size="sm" className={cn("mt-1 w-full", isCollapsed ? "px-0" : "justify-start")} onClick={() => logout.mutate()} disabled={logout.isPending} aria-label="Sign out"><LogOut className="size-3.5" />{!isCollapsed && (logout.isPending ? "Signing out…" : "Sign out")}</Button>
       </div>
     </aside>
   );

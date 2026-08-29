@@ -21,9 +21,19 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO projects (id, name, description, metadata, version, created_at, updated_at)
+UPDATE users
+SET password_hash = '$2a$10$PRAkSHebPVAcPzrNi9B5oe.nUjc3ZEyJdBf47pvpkg2jleyQCXYP.'
+WHERE id = '00000000-0000-7000-8000-000000000001'
+  AND password_hash IS NULL;
+
+INSERT INTO organization_members (organization_id, user_id, role)
+VALUES ('00000000-0000-7000-8000-000000000100', '00000000-0000-7000-8000-000000000001', 'OWNER')
+ON CONFLICT (organization_id, user_id) DO NOTHING;
+
+INSERT INTO projects (id, organization_id, name, description, metadata, version, created_at, updated_at)
 VALUES (
     '02000000-0000-7000-8000-000000000001',
+    '00000000-0000-7000-8000-000000000100',
     'Scale Lab',
     'Deterministic dataset for pagination and hot-comment performance checks.',
     '{"color":"amber","seed":"scale"}',

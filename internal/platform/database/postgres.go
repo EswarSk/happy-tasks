@@ -40,6 +40,93 @@ func Open(ctx context.Context, dsn string) (*Postgres, error) {
 func (p *Postgres) Close()                         { p.pool.Close() }
 func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
+const defaultOrganizationID = "00000000-0000-7000-8000-000000000100"
+
+func (p *Postgres) CreateUser(ctx context.Context, displayName, email, passwordHash string) (domain.User, error) {
+	id := uuid.Must(uuid.NewV7()).String()
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return domain.User{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	user, err := scanUser(tx.QueryRow(ctx, `
+		INSERT INTO users(id, display_name, email, password_hash)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, display_name, email, status, avatar_url, profile_updated_at, created_at, updated_at`, id, displayName, email, passwordHash))
+	if err != nil {
+		return domain.User{}, mapConstraintError(err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO organization_members(organization_id, user_id, role)
+		VALUES ($1, $2, 'MEMBER')`, defaultOrganizationID, user.ID); err != nil {
+		return domain.User{}, err
+	}
+	projectID := uuid.Must(uuid.NewV7()).String()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO projects(id, organization_id, name, description)
+		VALUES ($1, $2, $3, 'A private workspace for your tasks.')`, projectID, defaultOrganizationID, displayName+"'s workspace"); err != nil {
+		return domain.User{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO project_members(project_id, user_id, role, status, invited_by, joined_at)
+		VALUES ($1, $2, 'OWNER', 'ACTIVE', $2, now())`, projectID, user.ID); err != nil {
+		return domain.User{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO project_streams(project_id, last_sequence) VALUES ($1, 0)`, projectID); err != nil {
+		return domain.User{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.User{}, err
+	}
+	return user, nil
+}
+
+func (p *Postgres) GetAuthUser(ctx context.Context, email string) (domain.AuthUser, error) {
+	var item domain.AuthUser
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, display_name, email, status, avatar_url, profile_updated_at, created_at, updated_at, password_hash
+		FROM users
+		WHERE email = $1`, email).Scan(
+		&item.User.ID, &item.User.DisplayName, &item.User.Email, &item.User.Status, &item.User.AvatarURL,
+		&item.User.ProfileUpdatedAt, &item.User.CreatedAt, &item.User.UpdatedAt, &item.PasswordHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.AuthUser{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
+func (p *Postgres) CreateAuthSession(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO auth_sessions(token_hash, user_id, expires_at)
+		VALUES ($1, $2, $3)`, tokenHash, userID, expiresAt)
+	return mapConstraintError(err)
+}
+
+func (p *Postgres) GetAuthSessionUser(ctx context.Context, tokenHash []byte) (domain.User, error) {
+	var item domain.User
+	err := p.pool.QueryRow(ctx, `
+		UPDATE auth_sessions session
+		SET last_seen_at = now()
+	FROM users person
+	WHERE session.token_hash = $1
+	  AND session.expires_at > now()
+	  AND person.id = session.user_id
+	  AND person.status = 'ACTIVE'
+	RETURNING person.id, person.display_name, person.email, person.status, person.avatar_url,
+	          person.profile_updated_at, person.created_at, person.updated_at`, tokenHash).Scan(
+		&item.ID, &item.DisplayName, &item.Email, &item.Status, &item.AvatarURL,
+		&item.ProfileUpdatedAt, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.User{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
+func (p *Postgres) DeleteAuthSession(ctx context.Context, tokenHash []byte) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM auth_sessions WHERE token_hash = $1`, tokenHash)
+	return err
+}
+
 func (p *Postgres) WithinTx(ctx context.Context, fn func(app.Store) error) error {
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -57,10 +144,11 @@ func (p *Postgres) WithinTx(ctx context.Context, fn func(app.Store) error) error
 
 func (p *Postgres) ListProjects(ctx context.Context, actorID string, limit int) ([]domain.Project, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT p.id, p.name, p.description, p.metadata, p.version, p.created_at, p.updated_at,
+		SELECT p.id, p.organization_id, p.name, p.description, p.metadata, p.version, p.created_at, p.updated_at,
 		       count(t.id) AS task_count
 		FROM projects p
 		JOIN project_members pm ON pm.project_id = p.id
+		JOIN organization_members om ON om.organization_id = p.organization_id AND om.user_id = $1 AND om.status = 'ACTIVE'
 		JOIN users actor ON actor.id = pm.user_id
 		LEFT JOIN tasks t ON t.project_id = p.id
 		WHERE pm.user_id = $1
@@ -106,9 +194,15 @@ func (p *Postgres) Bootstrap(ctx context.Context, actorID, projectID string, fil
 	rows, err := tx.Query(ctx, `
 		SELECT u.id, u.display_name, u.email, u.status, u.avatar_url,
 		       u.profile_updated_at, u.created_at, u.updated_at
-		FROM project_members pm JOIN users u ON u.id = pm.user_id
+		FROM project_members pm
+		JOIN users u ON u.id = pm.user_id
+		JOIN projects p ON p.id = pm.project_id
+		JOIN organization_members om
+		  ON om.organization_id = p.organization_id
+		 AND om.user_id = pm.user_id
 		WHERE pm.project_id = $1
 		  AND pm.status = 'ACTIVE'
+		  AND om.status = 'ACTIVE'
 		  AND u.status = 'ACTIVE'
 		ORDER BY u.display_name, u.id
 		LIMIT 100`, projectID)
@@ -139,9 +233,10 @@ func (p *Postgres) Bootstrap(ctx context.Context, actorID, projectID string, fil
 
 func getProject(ctx context.Context, q querier, actorID, projectID string) (domain.Project, error) {
 	item, err := scanProject(q.QueryRow(ctx, `
-		SELECT p.id, p.name, p.description, p.metadata, p.version, p.created_at, p.updated_at
+		SELECT p.id, p.organization_id, p.name, p.description, p.metadata, p.version, p.created_at, p.updated_at
 		FROM projects p
 		JOIN project_members pm ON pm.project_id = p.id
+		JOIN organization_members om ON om.organization_id = p.organization_id AND om.user_id = $2 AND om.status = 'ACTIVE'
 		JOIN users actor ON actor.id = pm.user_id
 		WHERE p.id = $1 AND pm.user_id = $2
 		  AND pm.status = 'ACTIVE'
@@ -217,6 +312,31 @@ func listTasks(ctx context.Context, q querier, projectID string, filter app.Task
 
 func (p *Postgres) GetTask(ctx context.Context, projectID, taskID string) (domain.Task, error) {
 	return getTask(ctx, p.pool, projectID, taskID)
+}
+
+func (p *Postgres) ListAttachments(ctx context.Context, projectID, taskID string) ([]domain.Attachment, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at
+		FROM task_attachments
+		WHERE project_id = $1 AND task_id = $2
+		ORDER BY created_at DESC, id DESC`, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.Attachment, 0)
+	for rows.Next() {
+		item, err := scanAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (p *Postgres) GetAttachment(ctx context.Context, projectID, taskID, attachmentID string) (domain.Attachment, error) {
+	return getAttachment(ctx, p.pool, projectID, taskID, attachmentID)
 }
 
 func (p *Postgres) ListComments(ctx context.Context, projectID, taskID, actorID string, filter app.CommentFilter) ([]domain.Comment, error) {
@@ -481,13 +601,43 @@ func (s *store) ActorExists(ctx context.Context, actorID string) (bool, error) {
 	return exists, err
 }
 
+func (s *store) GetActiveOrganizationID(ctx context.Context, actorID string) (string, error) {
+	var organizationID string
+	err := s.q.QueryRow(ctx, `
+		SELECT organization_id
+		FROM organization_members
+		WHERE user_id = $1 AND status = 'ACTIVE'
+		ORDER BY created_at, organization_id
+		LIMIT 1
+		FOR SHARE`, actorID).Scan(&organizationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", domain.ErrForbidden
+	}
+	return organizationID, err
+}
+
+func (s *store) IsUserInProjectOrganization(ctx context.Context, projectID, userID string) (bool, error) {
+	var organizationID string
+	err := s.q.QueryRow(ctx, `
+		SELECT om.organization_id
+		FROM projects p
+		JOIN organization_members om ON om.organization_id = p.organization_id
+		WHERE p.id = $1 AND om.user_id = $2 AND om.status = 'ACTIVE'
+		LIMIT 1
+		FOR SHARE OF om`, projectID, userID).Scan(&organizationID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *store) GetActiveMembership(ctx context.Context, projectID, actorID string) (domain.Membership, error) {
 	item, err := scanMembership(s.q.QueryRow(ctx, membershipSelect+`
 		WHERE membership.project_id = $1
 		  AND membership.user_id = $2
 		  AND membership.status = 'ACTIVE'
 		  AND person.status = 'ACTIVE'
-		FOR SHARE OF membership, person`, projectID, actorID))
+		FOR SHARE OF membership, person, organization_membership`, projectID, actorID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Membership{}, domain.ErrForbidden
 	}
@@ -499,12 +649,17 @@ func (s *store) AreProjectMembers(ctx context.Context, projectID string, actorID
 		SELECT membership.user_id
 		FROM project_members membership
 		JOIN users person ON person.id = membership.user_id
+		JOIN projects project ON project.id = membership.project_id
+		JOIN organization_members organization_membership
+		  ON organization_membership.organization_id = project.organization_id
+		 AND organization_membership.user_id = membership.user_id
 		WHERE membership.project_id = $1
 		  AND membership.user_id = ANY($2::uuid[])
 		  AND membership.status = 'ACTIVE'
+		  AND organization_membership.status = 'ACTIVE'
 		  AND person.status = 'ACTIVE'
 		ORDER BY membership.user_id
-		FOR SHARE OF membership, person`, projectID, actorIDs)
+		FOR SHARE OF membership, person, organization_membership`, projectID, actorIDs)
 	if err != nil {
 		return false, err
 	}
@@ -538,8 +693,13 @@ func (s *store) CountActiveOwners(ctx context.Context, projectID string) (int, e
 	var count int
 	err := s.q.QueryRow(ctx, `
 		SELECT count(*)
-		FROM project_members membership
-		JOIN users person ON person.id = membership.user_id
+	FROM project_members membership
+	JOIN projects project ON project.id = membership.project_id
+	JOIN organization_members organization_membership
+	  ON organization_membership.organization_id = project.organization_id
+	 AND organization_membership.user_id = membership.user_id
+	 AND organization_membership.status = 'ACTIVE'
+	JOIN users person ON person.id = membership.user_id
 		WHERE membership.project_id = $1
 		  AND membership.status = 'ACTIVE'
 		  AND membership.role = 'OWNER'
@@ -599,15 +759,15 @@ func (s *store) UpdateMembership(ctx context.Context, projectID, membershipID st
 	return s.GetMembership(ctx, projectID, membershipID)
 }
 
-func (s *store) CreateProject(ctx context.Context, input app.CreateProjectInput, actorID string) (domain.Project, error) {
+func (s *store) CreateProject(ctx context.Context, input app.CreateProjectInput, actorID, organizationID string) (domain.Project, error) {
 	metadata, err := json.Marshal(input.Metadata)
 	if err != nil {
 		return domain.Project{}, err
 	}
 	item, err := scanProject(s.q.QueryRow(ctx, `
-		INSERT INTO projects(id, name, description, metadata)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, description, metadata, version, created_at, updated_at`, input.ID, input.Name, input.Description, metadata))
+		INSERT INTO projects(id, organization_id, name, description, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, organization_id, name, description, metadata, version, created_at, updated_at`, input.ID, organizationID, input.Name, input.Description, metadata))
 	if err != nil {
 		return domain.Project{}, fmt.Errorf("create project: %w", err)
 	}
@@ -639,6 +799,28 @@ func (s *store) CreateTask(ctx context.Context, projectID string, input app.Crea
 		return domain.Task{}, err
 	}
 	return getTask(ctx, s.q, projectID, input.ID)
+}
+
+func (s *store) CreateAttachment(ctx context.Context, input app.CreateAttachmentInput) (domain.Attachment, error) {
+	return scanAttachment(s.q.QueryRow(ctx, `
+		INSERT INTO task_attachments(
+			id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by
+		)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		RETURNING id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at`,
+		input.ID, input.ProjectID, input.TaskID, input.FileName, input.ContentType, input.ByteSize,
+		input.Checksum, input.StorageKey, input.UploadedBy))
+}
+
+func (s *store) DeleteAttachment(ctx context.Context, projectID, taskID, attachmentID string) (domain.Attachment, error) {
+	item, err := scanAttachment(s.q.QueryRow(ctx, `
+		DELETE FROM task_attachments
+		WHERE project_id = $1 AND task_id = $2 AND id = $3
+		RETURNING id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at`, projectID, taskID, attachmentID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Attachment{}, domain.ErrNotFound
+	}
+	return item, mapConstraintError(err)
 }
 
 func (s *store) GetTask(ctx context.Context, projectID, taskID string) (domain.Task, error) {
@@ -1150,9 +1332,14 @@ const membershipSelect = `
 	       person.id, person.display_name, person.email, person.status, person.avatar_url,
 	       person.profile_updated_at, person.created_at, person.updated_at,
 	       membership.role, membership.status, membership.version, membership.invited_by,
-	       membership.joined_at, membership.removed_at,
-	       membership.created_at, membership.updated_at
+      membership.joined_at, membership.removed_at,
+      membership.created_at, membership.updated_at
 	FROM project_members membership
+	JOIN projects project ON project.id = membership.project_id
+	JOIN organization_members organization_membership
+	  ON organization_membership.organization_id = project.organization_id
+	 AND organization_membership.user_id = membership.user_id
+	 AND organization_membership.status = 'ACTIVE'
 	JOIN users person ON person.id = membership.user_id `
 
 const taskSelect = `
@@ -1161,11 +1348,17 @@ const taskSelect = `
 	       COALESCE((
 	           SELECT jsonb_agg(ta.user_id ORDER BY ta.user_id)
 	           FROM task_assignees ta
-	           JOIN project_members active_membership
-	             ON active_membership.project_id = ta.project_id
-	            AND active_membership.user_id = ta.user_id
-	            AND active_membership.status = 'ACTIVE'
-	           JOIN users active_person
+		   JOIN project_members active_membership
+		     ON active_membership.project_id = ta.project_id
+		    AND active_membership.user_id = ta.user_id
+		    AND active_membership.status = 'ACTIVE'
+		   JOIN projects assignment_project
+		     ON assignment_project.id = ta.project_id
+		   JOIN organization_members assignment_organization
+		     ON assignment_organization.organization_id = assignment_project.organization_id
+		    AND assignment_organization.user_id = ta.user_id
+		    AND assignment_organization.status = 'ACTIVE'
+		   JOIN users active_person
 	             ON active_person.id = ta.user_id
 	            AND active_person.status = 'ACTIVE'
 	           WHERE ta.project_id=t.project_id AND ta.task_id=t.id
@@ -1190,10 +1383,28 @@ func getTaskForUpdate(ctx context.Context, q querier, projectID, taskID string) 
 	return item, err
 }
 
+func getAttachment(ctx context.Context, q querier, projectID, taskID, attachmentID string) (domain.Attachment, error) {
+	item, err := scanAttachment(q.QueryRow(ctx, `
+		SELECT id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at
+		FROM task_attachments
+		WHERE project_id = $1 AND task_id = $2 AND id = $3`, projectID, taskID, attachmentID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Attachment{}, domain.ErrNotFound
+	}
+	return item, err
+}
+
+func scanUser(row scanner) (domain.User, error) {
+	var item domain.User
+	err := row.Scan(&item.ID, &item.DisplayName, &item.Email, &item.Status, &item.AvatarURL,
+		&item.ProfileUpdatedAt, &item.CreatedAt, &item.UpdatedAt)
+	return item, err
+}
+
 func scanProject(row scanner) (domain.Project, error) {
 	var item domain.Project
 	var metadata []byte
-	err := row.Scan(&item.ID, &item.Name, &item.Description, &metadata, &item.Version, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.OrganizationID, &item.Name, &item.Description, &metadata, &item.Version, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return item, err
 	}
@@ -1206,7 +1417,7 @@ func scanProject(row scanner) (domain.Project, error) {
 func scanProjectWithTaskCount(row scanner) (domain.Project, error) {
 	var item domain.Project
 	var metadata []byte
-	err := row.Scan(&item.ID, &item.Name, &item.Description, &metadata, &item.Version, &item.CreatedAt, &item.UpdatedAt, &item.TaskCount)
+	err := row.Scan(&item.ID, &item.OrganizationID, &item.Name, &item.Description, &metadata, &item.Version, &item.CreatedAt, &item.UpdatedAt, &item.TaskCount)
 	if err != nil {
 		return item, err
 	}
@@ -1214,6 +1425,13 @@ func scanProjectWithTaskCount(row scanner) (domain.Project, error) {
 		return item, err
 	}
 	return item, nil
+}
+
+func scanAttachment(row scanner) (domain.Attachment, error) {
+	var item domain.Attachment
+	err := row.Scan(&item.ID, &item.ProjectID, &item.TaskID, &item.FileName, &item.ContentType,
+		&item.ByteSize, &item.Checksum, &item.StorageKey, &item.UploadedBy, &item.CreatedAt)
+	return item, err
 }
 
 func scanTask(row scanner) (domain.Task, error) {

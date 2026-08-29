@@ -3,15 +3,21 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/eswaravegi/happy-task-management/internal/domain"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Service struct {
@@ -21,6 +27,95 @@ type Service struct {
 
 func NewService(db Database, notifier Notifier) *Service {
 	return &Service{db: db, notifier: notifier}
+}
+
+const sessionLifetime = 30 * 24 * time.Hour
+
+func (s *Service) Register(ctx context.Context, displayName, email, password string) (domain.User, string, error) {
+	displayName = strings.TrimSpace(displayName)
+	email, err := normalizeEmail(email)
+	if err != nil || displayName == "" || len(displayName) > 120 || len(password) < 8 || len(password) > 128 {
+		return domain.User{}, "", domain.Validation("VALIDATION_ERROR", "Use a valid name, email, and password of 8 to 128 characters.", nil)
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return domain.User{}, "", fmt.Errorf("hash password: %w", err)
+	}
+	user, err := s.db.CreateUser(ctx, displayName, email, string(passwordHash))
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	token, err := newSessionToken()
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	if err := s.db.CreateAuthSession(ctx, user.ID, hashSessionToken(token), time.Now().Add(sessionLifetime)); err != nil {
+		return domain.User{}, "", err
+	}
+	return user, token, nil
+}
+
+func (s *Service) Login(ctx context.Context, email, password string) (domain.User, string, error) {
+	email, err := normalizeEmail(email)
+	if err != nil {
+		return domain.User{}, "", invalidCredentials()
+	}
+	authUser, err := s.db.GetAuthUser(ctx, email)
+	if err != nil || authUser.User.Status != domain.UserActive || authUser.PasswordHash == "" || bcrypt.CompareHashAndPassword([]byte(authUser.PasswordHash), []byte(password)) != nil {
+		return domain.User{}, "", invalidCredentials()
+	}
+	token, err := newSessionToken()
+	if err != nil {
+		return domain.User{}, "", err
+	}
+	if err := s.db.CreateAuthSession(ctx, authUser.User.ID, hashSessionToken(token), time.Now().Add(sessionLifetime)); err != nil {
+		return domain.User{}, "", err
+	}
+	return authUser.User, token, nil
+}
+
+func (s *Service) SessionUser(ctx context.Context, token string) (domain.User, error) {
+	if token == "" {
+		return domain.User{}, domain.Validation("UNAUTHENTICATED", "Sign in is required.", nil)
+	}
+	user, err := s.db.GetAuthSessionUser(ctx, hashSessionToken(token))
+	if err != nil {
+		return domain.User{}, err
+	}
+	return user, nil
+}
+
+func (s *Service) Logout(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	return s.db.DeleteAuthSession(ctx, hashSessionToken(token))
+}
+
+func normalizeEmail(value string) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(value))
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email || len(email) > 320 {
+		return "", fmt.Errorf("invalid email")
+	}
+	return email, nil
+}
+
+func newSessionToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate session token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func hashSessionToken(token string) []byte {
+	digest := sha256.Sum256([]byte(token))
+	return digest[:]
+}
+
+func invalidCredentials() error {
+	return domain.Validation("INVALID_CREDENTIALS", "The email or password is incorrect.", nil)
 }
 
 type Mutation[T any] struct {
@@ -128,14 +223,11 @@ func (s *Service) CreateProject(ctx context.Context, meta MutationMeta, input Cr
 		input.Metadata = map[string]any{}
 	}
 	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Project], error) {
-		exists, err := store.ActorExists(ctx, meta.ActorID)
+		organizationID, err := store.GetActiveOrganizationID(ctx, meta.ActorID)
 		if err != nil {
 			return mutationValue[domain.Project]{}, err
 		}
-		if !exists {
-			return mutationValue[domain.Project]{}, domain.ErrForbidden
-		}
-		project, err := store.CreateProject(ctx, input, meta.ActorID)
+		project, err := store.CreateProject(ctx, input, meta.ActorID, organizationID)
 		if err != nil {
 			return mutationValue[domain.Project]{}, err
 		}
@@ -175,6 +267,61 @@ func (s *Service) GetTask(ctx context.Context, actorID, projectID, taskID string
 		return domain.Task{}, err
 	}
 	return s.db.GetTask(ctx, projectID, taskID)
+}
+
+func (s *Service) ListAttachments(ctx context.Context, actorID, projectID, taskID string) ([]domain.Attachment, error) {
+	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
+		return nil, err
+	}
+	return s.db.ListAttachments(ctx, projectID, taskID)
+}
+
+func (s *Service) GetAttachment(ctx context.Context, actorID, projectID, taskID, attachmentID string) (domain.Attachment, error) {
+	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
+		return domain.Attachment{}, err
+	}
+	return s.db.GetAttachment(ctx, projectID, taskID, attachmentID)
+}
+
+func (s *Service) CreateAttachment(ctx context.Context, meta MutationMeta, input CreateAttachmentInput) (Mutation[domain.Attachment], error) {
+	if input.ByteSize < 1 || input.ByteSize > 25<<20 || len(input.FileName) == 0 || len(input.FileName) > 255 || len(input.ContentType) == 0 || len(input.Checksum) != 64 || len(input.StorageKey) == 0 {
+		return Mutation[domain.Attachment]{}, domain.Validation("VALIDATION_ERROR", "The attachment metadata is invalid.", nil)
+	}
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Attachment], error) {
+		if err := requireMember(ctx, store, input.ProjectID, meta.ActorID); err != nil {
+			return mutationValue[domain.Attachment]{}, err
+		}
+		if _, err := store.GetTask(ctx, input.ProjectID, input.TaskID); err != nil {
+			return mutationValue[domain.Attachment]{}, err
+		}
+		input.UploadedBy = meta.ActorID
+		attachment, err := store.CreateAttachment(ctx, input)
+		if err != nil {
+			return mutationValue[domain.Attachment]{}, err
+		}
+		return mutationValue[domain.Attachment]{
+			value:  attachment,
+			status: http.StatusCreated,
+			event:  EventDraft{ProjectID: input.ProjectID, Type: "attachment.created", AggregateType: "task", AggregateID: input.TaskID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: attachment},
+		}, nil
+	})
+}
+
+func (s *Service) DeleteAttachment(ctx context.Context, meta MutationMeta, projectID, taskID, attachmentID string) (Mutation[domain.Attachment], error) {
+	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Attachment], error) {
+		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
+			return mutationValue[domain.Attachment]{}, err
+		}
+		attachment, err := store.DeleteAttachment(ctx, projectID, taskID, attachmentID)
+		if err != nil {
+			return mutationValue[domain.Attachment]{}, err
+		}
+		return mutationValue[domain.Attachment]{
+			value:  attachment,
+			status: http.StatusOK,
+			event:  EventDraft{ProjectID: projectID, Type: "attachment.deleted", AggregateType: "task", AggregateID: taskID, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: map[string]any{"id": attachment.ID, "taskId": taskID, "deleted": true}},
+		}, nil
+	})
 }
 
 func (s *Service) GetTaskDescriptionDocument(ctx context.Context, actorID, projectID, taskID string) (domain.TaskDescriptionDocument, error) {
@@ -852,6 +999,13 @@ func (s *Service) CreateMembership(ctx context.Context, meta MutationMeta, proje
 		}
 		if !exists {
 			return mutationValue[domain.Membership]{}, domain.Validation("USER_NOT_ACTIVE", "The user does not exist or is not active.", nil)
+		}
+		inOrganization, err := store.IsUserInProjectOrganization(ctx, projectID, input.UserID)
+		if err != nil {
+			return mutationValue[domain.Membership]{}, err
+		}
+		if !inOrganization {
+			return mutationValue[domain.Membership]{}, domain.Validation("USER_NOT_IN_ORGANIZATION", "The user must belong to the project's organization before they can be added.", nil)
 		}
 		membership, err := store.CreateMembership(ctx, projectID, input, meta.ActorID)
 		if err != nil {
