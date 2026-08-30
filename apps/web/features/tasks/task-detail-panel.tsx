@@ -75,10 +75,11 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
     queryFn: () => workspaceApi.listTasks(projectId, { limit: 100 }),
     enabled: Boolean(task),
   });
+  const dependencySearchQuery = dependencySearch.trim();
   const candidateQuery = useQuery({
-    queryKey: ["dependency-candidates", projectId, taskId, dependencySearch],
-    queryFn: () => workspaceApi.listTasks(projectId, { limit: 100, search: dependencySearch }),
-    enabled: Boolean(task),
+    queryKey: ["dependency-candidates", projectId, taskId, dependencySearchQuery],
+    queryFn: () => workspaceApi.listTasks(projectId, { limit: 100, search: dependencySearchQuery }),
+    enabled: Boolean(task && dependencySearchQuery),
   });
   const attachmentsQuery = useQuery({ queryKey: ["attachments", projectId, taskId], queryFn: () => workspaceApi.listAttachments(projectId, taskId), enabled: Boolean(task) });
 
@@ -166,7 +167,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
     return <div className="h-full bg-[var(--panel)] p-5"><div className="h-8 w-2/3 animate-pulse rounded bg-[var(--skeleton)]" /><div className="mt-6 space-y-3">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="h-12 animate-pulse rounded-lg bg-[var(--skeleton)]" />)}</div></div>;
   }
 
-  const dependencyCandidates = candidateQuery.data?.items.filter((item) => item.id !== task.id && !task.dependencyIds.includes(item.id)).slice(0, 10) ?? [];
+  const dependencyCandidates = dependencySearchQuery ? candidateQuery.data?.items.filter((item) => item.id !== task.id && !task.dependencyIds.includes(item.id)).slice(0, 10) ?? [] : [];
   const customFields = customFieldsDrafts[task.id] ?? task.customFields;
   const customFieldsChanged = JSON.stringify(customFields) !== JSON.stringify(task.customFields);
   const title = draft.taskId === task.id ? draft.title : task.title;
@@ -230,7 +231,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
           </section>
 
           <section aria-labelledby="attachments-heading" className="border-b border-[var(--border-subtle)] py-5">
-            <div className="flex items-center justify-between"><h2 id="attachments-heading" className="section-label">Files</h2><label className="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--hover)]"><Paperclip className="size-3.5" />Attach<input type="file" className="sr-only" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md" disabled={uploadAttachment.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadAttachment.mutate(file); event.currentTarget.value = ""; }} /></label></div>
+            <div className="flex items-center justify-between"><h2 id="attachments-heading" className="section-label">Files</h2><label className="relative inline-flex min-h-8 cursor-pointer items-center gap-1.5 overflow-hidden rounded-full border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--hover)] focus-within:ring-2 focus-within:ring-[var(--focus)]"><Paperclip className="size-3.5" />Attach<input type="file" className="absolute inset-0 h-full w-full cursor-pointer opacity-0" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md" disabled={uploadAttachment.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadAttachment.mutate(file); event.currentTarget.value = ""; }} /></label></div>
             <div className="mt-3 space-y-2">
               {attachmentsQuery.data?.map((attachment) => <div key={attachment.id} className="flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2"><FileText className="size-4 shrink-0 text-[var(--text-muted)]" /><a href={workspaceApi.attachmentUrl(projectId, taskId, attachment.id)} download={attachment.fileName} className="min-w-0 flex-1 truncate text-xs font-medium underline-offset-2 hover:underline">{attachment.fileName}<span className="ml-1 font-normal text-[var(--text-muted)]">{formatBytes(attachment.byteSize)}</span></a><Button type="button" variant="ghost" size="icon" className="size-7" aria-label={`Remove ${attachment.fileName}`} disabled={deleteAttachment.isPending} onClick={() => deleteAttachment.mutate(attachment.id)}><X className="size-3.5" /></Button></div>)}
               {!attachmentsQuery.isLoading && !attachmentsQuery.data?.length && <p className="text-xs text-[var(--text-muted)]">Attach a document or photo. Files can be up to 25 MB.</p>}
@@ -247,7 +248,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
               {!task.dependencyIds.length && <p className="text-xs text-[var(--text-muted)]">No dependencies yet.</p>}
               <div className="relative"><Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[var(--text-muted)]" /><Input value={dependencySearch} onChange={(event) => setDependencySearch(event.target.value)} aria-label="Search dependencies" placeholder="Search tasks to add…" className="h-9 pl-9 text-xs" /></div>
               {dependencyCandidates.length > 0 && <div className="max-h-56 space-y-1 overflow-y-auto rounded-xl border border-[var(--border)] p-1" role="listbox" aria-label="Dependency candidates">{dependencyCandidates.map((item) => <button key={item.id} type="button" role="option" aria-selected="false" disabled={dependencyMutation.isPending} onClick={() => { dependencyMutation.mutate(item.id); setDependencySearch(""); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><span className="min-w-0 flex-1 truncate"><span className="font-mono text-[10px] text-[var(--text-muted)]">{item.key}</span> · {item.title}</span><span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-[var(--text-muted)]"><StatusIcon status={item.status} />{statusLabels[item.status]} · blocks {item.blockingCount}</span></button>)}</div>}
-              {!candidateQuery.isLoading && dependencySearch && !dependencyCandidates.length && <p className="text-xs text-[var(--text-muted)]">No matching tasks in this project.</p>}
+              {!candidateQuery.isLoading && dependencySearchQuery && !dependencyCandidates.length && <p className="text-xs text-[var(--text-muted)]">No matching tasks in this project.</p>}
               {dependencyError && <p className="flex items-start gap-1.5 text-xs text-[var(--danger-text)]"><AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{dependencyError}</p>}
               <p className="text-[10px] text-[var(--text-muted)]">Cycle-forming dependency edges are rejected transactionally.</p>
             </div>

@@ -143,7 +143,7 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
   const taskDetail = selectedTaskId ? <TaskDetailPanel projectId={projectId} taskId={selectedTaskId} members={members} collaborators={presence.collaborators} onSelectionChange={presence.updateSelection} onClose={closeTask} onOpenTask={openTask} onToggleExpand={toggleDetailPanel} detailExpanded={detailExpanded} /> : null;
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-[var(--background)] text-[var(--text)]">
+    <div className="fixed inset-0 flex overflow-hidden bg-[var(--background)] text-[var(--text)]">
       <ProjectSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} currentActor={currentActor} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed((current) => !current)} onCreateTask={openCreateTask} />
       <main className="flex min-w-0 flex-1 flex-col gap-0 lg:gap-3 lg:p-3">
         <header className="shrink-0 border-b border-[var(--border)] bg-[var(--panel)] shadow-sm shadow-[var(--shadow)] lg:rounded-xl lg:border">
