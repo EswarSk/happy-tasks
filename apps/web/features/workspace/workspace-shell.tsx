@@ -4,7 +4,7 @@ import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutGrid, List, Menu, Plus, Search, Sparkles, Tags, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConnectionStatus } from "@/components/patterns/connection-status";
 import { ProjectSidebar } from "@/components/patterns/project-sidebar";
@@ -16,7 +16,6 @@ import { Select } from "@/components/ui/select";
 import { prependTaskToCache } from "@/features/tasks/query-cache";
 import { ActivityFeed } from "@/features/activity/activity-feed";
 import { NotificationBell } from "@/features/notifications/notification-bell";
-import { PresenceStrip } from "@/features/collaboration/presence-strip";
 import { useProjectPresence } from "@/features/collaboration/use-project-presence";
 import { TaskDetailPanel } from "@/features/tasks/task-detail-panel";
 import { TaskList } from "@/features/tasks/task-list";
@@ -25,6 +24,13 @@ import { useProjectEvents } from "@/features/realtime/use-project-events";
 import { dataSource, demoActorId, type ConnectionState, type Project, type TaskFilters, type TaskPriority, type TaskStatus, WorkspaceApiError, workspaceApi } from "@/lib/api";
 
 interface WorkspaceShellProps { projectId: string; selectedTaskId?: string; showActivity?: boolean }
+
+const desktopQuery = "(min-width: 64rem)";
+const subscribeDesktop = (listener: () => void) => {
+  const media = window.matchMedia(desktopQuery);
+  media.addEventListener("change", listener);
+  return () => media.removeEventListener("change", listener);
+};
 
 export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false }: WorkspaceShellProps) {
   const router = useRouter();
@@ -39,12 +45,13 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
   const [expandedDetailTaskId, setExpandedDetailTaskId] = useState<string | null>(null);
   const detailPanelRef = usePanelRef();
   const [search, setSearch] = useState(searchParams.get("q") ?? "");
+  const desktop = useSyncExternalStore(subscribeDesktop, () => window.matchMedia(desktopQuery).matches, () => false);
   const showDebugMetadata = process.env.NEXT_PUBLIC_DEBUG_UI === "true";
   const bootstrap = useQuery({ queryKey: ["bootstrap", projectId], queryFn: () => workspaceApi.bootstrap(projectId) });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => workspaceApi.listProjects() });
   const authUserQuery = useQuery({ queryKey: ["auth-me"], queryFn: () => workspaceApi.me(), enabled: dataSource === "api" });
   const realtimeState = useProjectEvents(projectId, bootstrap.data?.streamCursor ?? 0, dataSource === "api" && Boolean(bootstrap.data));
-  const presence = useProjectPresence(projectId, selectedTaskId, Boolean(bootstrap.data));
+  const presence = useProjectPresence(projectId, selectedTaskId, authUserQuery.data?.id ?? demoActorId, Boolean(bootstrap.data && selectedTaskId));
   const displayedConnection = dataSource === "api" ? realtimeState : connection;
   const status = (searchParams.get("status") ?? "all") as TaskStatus | "all";
   const priority = (searchParams.get("priority") ?? "all") as TaskPriority | "all";
@@ -150,7 +157,6 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
               {showDebugMetadata && <span className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-2 py-1 font-mono text-[10px] font-semibold text-[var(--text-muted)]">{dataSource === "mock" ? "MOCK API" : "GO API"}</span>}
               {dataSource === "mock" && <Select label="Demo connection state" value={connection} onValueChange={(value) => setConnection(value as ConnectionState)} options={[{ value: "live", label: "Live" }, { value: "reconnecting", label: "Reconnecting" }, { value: "offline", label: "Offline" }]} className="min-w-32" />}
             </div>
-            <PresenceStrip collaborators={presence.collaborators} members={members} />
             <NotificationBell projectId={projectId} members={members} />
             <ThemeToggle />
             <Button onClick={openCreateTask} aria-label="Create new task" title="Create new task"><Plus className="size-4" /><span className="hidden sm:inline">New task</span></Button>
@@ -166,14 +172,12 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
         </header>
         <div className="min-h-0 flex-1 overflow-hidden bg-[var(--panel)] lg:rounded-xl lg:border lg:border-[var(--border)] lg:shadow-sm lg:shadow-[var(--shadow)]">
           {showActivity ? <ActivityFeed projectId={projectId} members={members} /> : <>
-            <div className="hidden h-full lg:block">
+            {desktop ? (
               <Group orientation="horizontal">
                 <Panel id="tasks" minSize="38%" defaultSize={selectedTaskId ? "58%" : "100%"}>{taskList}</Panel>
                 {selectedTaskId && <><Separator className="group relative w-px bg-[var(--border)] outline-none after:absolute after:inset-y-0 after:-left-1 after:w-3 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]" /><Panel id="detail" panelRef={detailPanelRef} minSize="34%" defaultSize="42%" onResize={(size) => setExpandedDetailTaskId(size.asPercentage >= 55 ? selectedTaskId : null)}>{taskDetail}</Panel></>}
               </Group>
-            </div>
-            <div className="h-full lg:hidden">{taskList}</div>
-            {selectedTaskId && <div className="fixed inset-0 z-40 bg-[var(--panel)] lg:hidden">{taskDetail}</div>}
+            ) : <><div className="h-full">{taskList}</div>{selectedTaskId && <div className="fixed inset-0 z-40 bg-[var(--panel)]">{taskDetail}</div>}</>}
           </>}
         </div>
       </main>

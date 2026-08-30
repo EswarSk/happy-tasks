@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/eswaravegi/happy-task-management/internal/messaging"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -73,6 +75,14 @@ func (h *presenceHub) snapshot(room string) []presenceFrame {
 }
 
 func (h *presenceHub) broadcast(room string, sender *presenceClient, frame presenceFrame) {
+	excluded := ""
+	if sender != nil {
+		excluded = sender.sessionID
+	}
+	h.broadcastSession(room, excluded, frame)
+}
+
+func (h *presenceHub) broadcastSession(room, excludedSessionID string, frame presenceFrame) {
 	payload, err := json.Marshal(frame)
 	if err != nil {
 		return
@@ -80,7 +90,7 @@ func (h *presenceHub) broadcast(room string, sender *presenceClient, frame prese
 	h.mu.RLock()
 	clients := make([]*presenceClient, 0, len(h.rooms[room]))
 	for client := range h.rooms[room] {
-		if client != sender {
+		if client.sessionID != excludedSessionID {
 			clients = append(clients, client)
 		}
 	}
@@ -135,15 +145,38 @@ func (h *Handler) collaborationWebSocket(w http.ResponseWriter, r *http.Request)
 	h.presenceHub.join(room, client)
 	defer func() {
 		h.presenceHub.leave(room, client)
-		h.presenceHub.broadcast(room, client, presenceFrame{Type: "leave", SessionID: client.sessionID, ActorID: actorID})
+		leave := presenceFrame{Type: "leave", SessionID: client.sessionID, ActorID: actorID}
+		if h.realtime != nil {
+			if err := h.realtime.RemovePresence(context.Background(), projectID, toMessagingPresence(leave)); err == nil {
+				return
+			}
+		}
+		h.presenceHub.broadcast(room, client, leave)
 	}()
 	go presenceWriter(client)
-	for _, frame := range h.presenceHub.snapshot(room) {
+	snapshot := h.presenceHub.snapshot(room)
+	if h.realtime != nil {
+		if remote, err := h.realtime.ListPresence(r.Context(), projectID); err == nil {
+			snapshot = snapshot[:0]
+			for _, item := range remote {
+				snapshot = append(snapshot, fromMessagingPresence(item))
+			}
+		}
+	}
+	for _, frame := range snapshot {
 		if frame.SessionID != client.sessionID {
 			_ = client.sendJSON(frame)
 		}
 	}
 	_ = client.sendJSON(presenceFrame{Type: "welcome", SessionID: client.sessionID, ActorID: actorID})
+	initial := presenceFrame{Type: "presence", SessionID: client.sessionID, ActorID: actorID}
+	if h.realtime != nil {
+		if err := h.realtime.PutPresence(r.Context(), projectID, toMessagingPresence(initial)); err != nil {
+			h.presenceHub.broadcast(room, client, initial)
+		}
+	} else {
+		h.presenceHub.broadcast(room, client, initial)
+	}
 
 	conn.SetReadLimit(maxPresenceFrame)
 	_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
@@ -165,8 +198,21 @@ func (h *Handler) collaborationWebSocket(w http.ResponseWriter, r *http.Request)
 		}
 		frame.SessionID = client.sessionID
 		frame.ActorID = client.actorID
+		if h.realtime != nil {
+			if err := h.realtime.PutPresence(r.Context(), projectID, toMessagingPresence(frame)); err == nil {
+				continue
+			}
+		}
 		h.presenceHub.broadcast(room, client, frame)
 	}
+}
+
+func toMessagingPresence(frame presenceFrame) messaging.Presence {
+	return messaging.Presence{Type: frame.Type, SessionID: frame.SessionID, ActorID: frame.ActorID, TaskID: frame.TaskID, SelectionFrom: frame.SelectionFrom, SelectionTo: frame.SelectionTo}
+}
+
+func fromMessagingPresence(item messaging.Presence) presenceFrame {
+	return presenceFrame{Type: item.Type, SessionID: item.SessionID, ActorID: item.ActorID, TaskID: item.TaskID, SelectionFrom: item.SelectionFrom, SelectionTo: item.SelectionTo}
 }
 
 func presenceWriter(client *presenceClient) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/eswaravegi/happy-task-management/internal/app"
 	"github.com/eswaravegi/happy-task-management/internal/domain"
+	"github.com/eswaravegi/happy-task-management/internal/messaging"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -23,17 +24,18 @@ const (
 )
 
 type descriptionFrame struct {
-	Type        string   `json:"type"`
-	MessageID   string   `json:"messageId,omitempty"`
-	Update      string   `json:"update,omitempty"`
-	Text        string   `json:"text,omitempty"`
-	ActorID     string   `json:"actorId,omitempty"`
-	Initialized bool     `json:"initialized,omitempty"`
-	ReadOnly    bool     `json:"readOnly,omitempty"`
-	Snapshot    string   `json:"snapshot,omitempty"`
-	Updates     []string `json:"updates,omitempty"`
-	Version     int64    `json:"version,omitempty"`
-	Error       string   `json:"error,omitempty"`
+	Type           string   `json:"type"`
+	MessageID      string   `json:"messageId,omitempty"`
+	Update         string   `json:"update,omitempty"`
+	Text           string   `json:"text,omitempty"`
+	ActorID        string   `json:"actorId,omitempty"`
+	Initialized    bool     `json:"initialized,omitempty"`
+	ReadOnly       bool     `json:"readOnly,omitempty"`
+	ReadOnlyReason string   `json:"readOnlyReason,omitempty"`
+	Snapshot       string   `json:"snapshot,omitempty"`
+	Updates        []string `json:"updates,omitempty"`
+	Version        int64    `json:"version,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
 
 type descriptionClient struct {
@@ -53,7 +55,7 @@ func newDescriptionHub() *descriptionHub {
 	return &descriptionHub{rooms: make(map[string]map[*descriptionClient]struct{})}
 }
 
-func (h *descriptionHub) join(room string, client *descriptionClient) bool {
+func (h *descriptionHub) join(room string, client *descriptionClient, eligibility ...bool) bool {
 	h.mu.Lock()
 	if h.rooms[room] == nil {
 		h.rooms[room] = make(map[*descriptionClient]struct{})
@@ -64,7 +66,8 @@ func (h *descriptionHub) join(room string, client *descriptionClient) bool {
 			editors++
 		}
 	}
-	client.editor = editors < maxDescriptionEditors
+	eligible := len(eligibility) == 0 || eligibility[0]
+	client.editor = eligible && editors < maxDescriptionEditors
 	h.rooms[room][client] = struct{}{}
 	h.mu.Unlock()
 	return client.editor
@@ -122,6 +125,11 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
+	roleCanEdit, err := h.service.CanMutateProject(r.Context(), actorID, projectID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4 * 1024,
 		WriteBufferSize: 4 * 1024,
@@ -133,7 +141,7 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	client := &descriptionClient{conn: conn, send: make(chan []byte, 32), done: make(chan struct{})}
 	room := projectID + ":" + taskID
-	canEdit := h.descriptionHub.join(room, client)
+	canEdit := h.descriptionHub.join(room, client, roleCanEdit)
 	defer h.descriptionHub.leave(room, client)
 	go descriptionWriter(client)
 
@@ -147,6 +155,11 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bootstrap := descriptionFrame{Type: "bootstrap", Initialized: document.Initialized, Text: task.Description, ReadOnly: !canEdit}
+	if !roleCanEdit {
+		bootstrap.ReadOnlyReason = "role"
+	} else if !canEdit {
+		bootstrap.ReadOnlyReason = "capacity"
+	}
 	if document.Initialized {
 		bootstrap.Snapshot = base64.StdEncoding.EncodeToString(document.Snapshot)
 	} else {
@@ -198,8 +211,16 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = client.sendJSON(descriptionFrame{Type: "error", MessageID: messageID, Error: code})
 			continue
 		}
+		if h.documentProducer != nil {
+			if err := h.documentProducer.PublishDocumentUpdate(r.Context(), messaging.DocumentUpdate{ProjectID: projectID, TaskID: taskID, MessageID: messageID, ActorID: actorID, Update: frame.Update, Text: frame.Text}); err != nil {
+				_ = client.sendJSON(descriptionFrame{Type: "error", MessageID: messageID, Error: "DESCRIPTION_DELIVERY_FAILED"})
+				return
+			}
+		}
 		_ = client.sendJSON(descriptionFrame{Type: "ack", MessageID: messageID, Version: result.Value.Version})
-		h.descriptionHub.broadcast(room, client, descriptionFrame{Type: "update", Update: frame.Update, Text: frame.Text, ActorID: actorID})
+		if h.documentProducer == nil {
+			h.descriptionHub.broadcast(room, client, descriptionFrame{Type: "update", Update: frame.Update, Text: frame.Text, ActorID: actorID})
+		}
 	}
 }
 

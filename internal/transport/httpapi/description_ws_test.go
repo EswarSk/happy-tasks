@@ -14,4 +14,8 @@ func TestDescriptionHubCapsEditorsAndKeepsObservers(t *testing.T) {
 	if hub.join("room", observer) || observer.editor {
 		t.Fatal("client over the editor cap should be a read-only observer")
 	}
+	viewer := &descriptionClient{}
+	if hub.join("another-room", viewer, false) || viewer.editor {
+		t.Fatal("viewer role must never receive an editor slot")
+	}
 }

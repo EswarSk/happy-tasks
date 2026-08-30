@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/eswaravegi/happy-task-management/internal/app"
+	"github.com/eswaravegi/happy-task-management/internal/messaging"
 	"github.com/eswaravegi/happy-task-management/internal/platform/database"
+	"github.com/eswaravegi/happy-task-management/internal/platform/objectstorage"
 	"github.com/eswaravegi/happy-task-management/internal/syncstream"
 	"github.com/eswaravegi/happy-task-management/internal/transport/httpapi"
 )
@@ -29,9 +31,37 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	attachments, err := objectstorage.Open(context.Background(), objectstorage.Config{
+		Bucket:       env("S3_BUCKET", "happy-task-attachments"),
+		Region:       env("AWS_REGION", "us-east-1"),
+		Endpoint:     strings.TrimSpace(os.Getenv("S3_ENDPOINT")),
+		CreateBucket: envBool("S3_CREATE_BUCKET", false),
+	})
+	if err != nil {
+		logger.Error("object storage configuration failed", "error", err)
+		os.Exit(1)
+	}
 
 	hub := syncstream.NewHub()
-	service := app.NewService(db, hub)
+	var realtime *messaging.Redis
+	if redisURL := strings.TrimSpace(os.Getenv("REDIS_URL")); redisURL != "" {
+		realtime, err = messaging.OpenRedis(context.Background(), redisURL)
+		if err != nil {
+			logger.Error("redis configuration failed", "error", err)
+			os.Exit(1)
+		}
+		defer realtime.Close()
+	}
+	var documentProducer *messaging.Producer
+	if brokers := messaging.Brokers(os.Getenv("REDPANDA_BROKERS")); len(brokers) > 0 {
+		documentProducer = messaging.NewProducer(brokers)
+		defer documentProducer.Close()
+	}
+	var notifier app.Notifier = hub
+	if realtime != nil {
+		notifier = nil
+	}
+	service := app.NewService(db, notifier)
 	handler := httpapi.New(
 		service,
 		hub,
@@ -40,9 +70,11 @@ func main() {
 		splitCSV(env("CORS_ALLOWED_ORIGINS", "http://localhost:3000")),
 		logger,
 		httpapi.Config{
-			AuthRequired:   envBool("AUTH_REQUIRED", true),
-			SecureCookies:  envBool("AUTH_COOKIE_SECURE", false),
-			AttachmentsDir: env("ATTACHMENTS_DIR", ".data/attachments"),
+			AuthRequired:     envBool("AUTH_REQUIRED", true),
+			SecureCookies:    envBool("AUTH_COOKIE_SECURE", false),
+			Attachments:      attachments,
+			Realtime:         realtime,
+			DocumentProducer: documentProducer,
 		},
 	)
 	server := &http.Server{
@@ -56,7 +88,12 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	go listenForDatabaseEvents(ctx, logger, db, hub)
+	go cleanupAttachmentObjects(ctx, logger, db, attachments)
+	if realtime != nil {
+		go subscribeRealtime(ctx, logger, realtime, hub, handler)
+	} else {
+		go listenForDatabaseEvents(ctx, logger, db, hub)
+	}
 	go func() {
 		logger.Info("api listening", "address", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -71,6 +108,53 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 		_ = server.Close()
+	}
+}
+
+func cleanupAttachmentObjects(ctx context.Context, logger *slog.Logger, db *database.Postgres, attachments *objectstorage.S3) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		keys, err := db.ClaimAttachmentObjectCleanup(ctx, 25)
+		if err != nil && ctx.Err() == nil {
+			logger.Warn("attachment cleanup claim failed", "error", err)
+		}
+		for _, key := range keys {
+			if err := attachments.Delete(ctx, key); err != nil {
+				logger.Warn("attachment object cleanup failed", "error", err, "storage_key", key)
+				_ = db.RetryAttachmentObjectCleanup(ctx, key)
+				continue
+			}
+			if err := db.CompleteAttachmentObjectCleanup(ctx, key); err != nil && ctx.Err() == nil {
+				logger.Warn("attachment cleanup completion failed", "error", err, "storage_key", key)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func subscribeRealtime(ctx context.Context, logger *slog.Logger, realtime *messaging.Redis, hub *syncstream.Hub, handler *httpapi.Handler) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		err := realtime.Subscribe(ctx, hub.PublishEvent, handler.PublishDocumentUpdate, handler.PublishPresence)
+		if ctx.Err() != nil {
+			return
+		}
+		logger.Warn("redis realtime subscriber disconnected", "error", err, "retry_in", backoff.String())
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if backoff < 10*time.Second {
+			backoff *= 2
+		}
 	}
 }
 

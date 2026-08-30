@@ -14,15 +14,16 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Dependency creation/removal with transactional cycle prevention.
 - Nested comment threads with same-task database constraints, cursor-ready indexing, optimistic rollback, and near-real-time delivery.
 - Comment reactions with one reaction per user/comment, transactional counts, and live reconciliation.
-- Ephemeral project presence, task focus sharing, and live description-selection awareness over bounded WebSocket rooms.
+- Ephemeral task presence and live description-selection awareness over bounded WebSocket rooms, deduplicated by user across browser sessions.
 - @handle comment mentions with durable in-app notifications and real-time unread-count reconciliation.
 - A project activity timeline plus a native drag-and-drop Kanban board that uses the same task rules as the list.
 - Conflict detection through `If-Match` versions and retry-safe writes through idempotency keys.
 - Field-level task operation history with actor-scoped undo/redo; independent stale edits (for example status and priority) merge safely.
 - Yjs CRDT description editing over a task-scoped WebSocket with durable snapshots, replayable updates, and a searchable text projection.
 - Durable, ordered project event streams with reconnect/replay semantics.
+- Transactional outbox delivery through Redpanda plus Redis cross-instance fan-out, leased presence, and bounded Yjs snapshot compaction.
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
-- Task file attachments for documents and photos up to 25 MB each, stored outside task JSON with authenticated download/delete and SHA-256 metadata.
+- Task file attachments for documents and photos up to 25 MB each, stored in S3-compatible object storage with authenticated download/delete, SHA-256 metadata, and durable cleanup retries.
 - Installable PWA manifest, service worker shell caching, offline fallback, and connection status messaging.
 - Mock mode for isolated UI development and API mode for the integrated product.
 - Reversible migrations, deterministic demo/scale seeds, schema verification, CI, container builds, and a k6 scenario.
@@ -30,7 +31,7 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 
 ## Quick start
 
-Prerequisite: Docker with Compose. Ports `3000`, `8080`, and `5432` must be available unless overridden in `.env`.
+Prerequisite: Docker with Compose. Ports `3000`, `8080`, `5432`, `6379`, `9000`, `9001`, and `19092` must be available unless overridden in `.env`.
 
 ```bash
 cp .env.example .env
@@ -72,21 +73,21 @@ The latest local scale baseline is recorded in [`docs/load-test-results.md`](doc
 
 ```text
 Next.js 16 + React Query + virtualized list
-             | REST reads/writes
-             | project SSE stream
-             v
-Go API (Chi modular monolith)
-  projects | tasks | comments | dependencies | sync
-             |
-             | one transaction: domain write + sync event
-             v
-PostgreSQL 17
-  normalized state | sync_events | idempotency records
-             |
-             `-- LISTEN/NOTIFY wake-up hint
+       | REST + SSE + collaboration WebSockets
+       v
+Stateless Go API replicas
+       | transactional domain writes   ` attachment bytes
+       v                                 v
+PostgreSQL 17                   MinIO locally / S3 in production
+       | sync_events outbox
+       v
+     relay --> Redpanda --> Redis ephemeral fan-out
+                              | project events
+                              | presence leases
+                              ` Yjs live updates
 ```
 
-PostgreSQL is the system of record because task transitions, membership, dependencies, comments, idempotency, and event publication benefit from relational constraints and multi-row transactions. `LISTEN/NOTIFY` is only a low-latency hint; a missed notification does not lose data because clients replay `sync_events` after their last sequence.
+PostgreSQL is the system of record because task transitions, membership, dependencies, comments, idempotency, and event publication benefit from relational constraints and multi-row transactions. A competing-safe relay publishes committed `sync_events` to the Kafka-compatible Redpanda log, keyed by project. Redis carries only disposable last-mile delivery and presence leases. A missed broker or Redis notification does not lose task data because SSE clients replay `sync_events` after their last sequence.
 
 MongoDB would make flexible task documents convenient, but unbounded embedded comments and dependency consistency would still require separate collections, indexes, and transactions. Cassandra becomes compelling later for very high-volume, append-heavy comment or activity projections, but it is not a good authority for graph-cycle checks and cross-entity invariants in this two-day scope.
 
@@ -98,6 +99,7 @@ The code is separated by responsibility:
 - `internal/domain`: domain types and validation.
 - `internal/app`: use cases and transactional orchestration.
 - `internal/platform/database`: PostgreSQL implementation.
+- `internal/platform/objectstorage`: shared MinIO/S3 attachment storage.
 - `internal/transport/httpapi`: REST/SSE transport concerns.
 - `db/migrations`, `db/seed`, and `db/checks`: schema lifecycle and verification.
 
@@ -131,7 +133,7 @@ Task metadata uses field-level optimistic concurrency and explicit inverse opera
 - Event payloads are capped and contain changed entities rather than project snapshots.
 - The UI virtualizes rows, memoizes item rendering, and incrementally fetches pages.
 
-The first scale step is read replicas, connection pooling, table partitioning, and a dedicated SSE tier reading the same durable log. A broker can later fan out wake-ups without changing correctness. Cassandra is an optional projection store only when measured comment/activity traffic warrants a separately optimized write path.
+The next scale steps are connection pooling, read replicas, topic/table partitioning, a dedicated SSE gateway, and Redis Cluster. Redpanda, Redis, the relay, and the Yjs compactor are already outside the domain transaction path, so API autoscaling does not change task correctness.
 
 ## Development without the full stack
 
@@ -151,7 +153,7 @@ cd apps/web
 NEXT_PUBLIC_DATA_SOURCE=api NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run dev
 ```
 
-Authentication is enabled by default in Compose; set `AUTH_REQUIRED=false` only for a deliberately unauthenticated local demo. New accounts receive a private starter project. After loading the demo seed, sign in as `maya@example.test` with password `password` (the credential is for local fixtures only). Set `ATTACHMENTS_DIR` to a persistent volume in development or deployment. A project's aggregate data can exceed 2 MB because tasks remain paginated and file bytes are stored separately; task files support common documents and images up to 25 MB each, while the API still rejects a single oversized JSON mutation.
+Authentication is enabled by default in Compose; set `AUTH_REQUIRED=false` only for a deliberately unauthenticated local demo. New accounts receive a private starter project. After loading the demo seed, sign in as `maya@example.test` with password `password` (the credential is for local fixtures only). Compose uses MinIO through `S3_ENDPOINT`; production omits that endpoint and uses AWS S3 with the normal IAM credential chain. A project's aggregate data can exceed 2 MB because tasks remain paginated and file bytes are stored separately; task files support common documents and images up to 25 MB each, while the API still rejects a single oversized JSON mutation.
 
 ## Verification
 
@@ -162,7 +164,7 @@ Equivalent focused checks:
 ```bash
 go vet ./cmd/... ./internal/...
 go test -race ./cmd/... ./internal/...
-go build -o /tmp/happy-task-api ./cmd/api
+go build ./cmd/...
 
 npm --prefix apps/web run lint
 npm --prefix apps/web run typecheck
@@ -186,4 +188,4 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 
 ## Deliberate boundaries
 
-Sessions contain only a random token whose SHA-256 digest is persisted. Active organization membership is required alongside project roles for every project read and mutation; project owners/admins manage memberships and viewers are read-only. The seeded `DEFAULT_ACTOR_ID` fallback and arbitrary `X-Actor-ID` overrides are development-only. `user_identities` remains the stable provider/subject boundary for a future production OIDC/JWT gateway without coupling the take-home to an auth vendor. Local attachments intentionally use filesystem storage; object storage, malware scanning, and external identity federation remain deployment concerns. Global search and broker-backed fan-out remain documented extension points. The description CRDT, ephemeral collaboration room, notifications, reactions, activity projection, and board view are isolated so those additions do not force a rewrite of the core task model.
+Sessions contain only a random token whose SHA-256 digest is persisted. Active organization membership is required alongside project roles for every project read and mutation; project owners/admins manage memberships and viewers are read-only, including the live description channel. The seeded `DEFAULT_ACTOR_ID` fallback and arbitrary `X-Actor-ID` overrides are development-only. Malware scanning, distributed rate limiting, and external identity federation remain deployment concerns.

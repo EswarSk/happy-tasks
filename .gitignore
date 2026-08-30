@@ -8,3 +8,4 @@ coverage/
 *.coverprofile
 *.log
 tmp/
+/workers/**/node_modules/

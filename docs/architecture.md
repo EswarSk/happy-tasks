@@ -8,7 +8,7 @@
 
 **Primary database:** PostgreSQL
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-08-29
 
 ## 1. Executive summary
 
@@ -16,9 +16,9 @@ Build a collaborative task-management application in which users create projects
 
 The implementation is a **modular monolith**, not a collection of microservices. The Go API owns domain rules, persistence, transactions, and synchronization. The Next.js application owns presentation, local interaction state, optimistic UI, and reconciliation of server events. PostgreSQL is the source of truth.
 
-Each successful mutation writes both the new domain state and a compact synchronization event in one database transaction. A project-scoped Server-Sent Events (SSE) endpoint replays durable events after a client's last acknowledged sequence and then streams new events. PostgreSQL `LISTEN/NOTIFY` is only a low-latency wake-up signal; correctness comes from the durable event table.
+Each successful project mutation writes both the new domain state and a compact synchronization event in one database transaction. Competing relay replicas publish the transactional outbox to Redpanda, keyed by project, and a consumer group uses Redis for cross-instance last-mile fan-out. A project-scoped SSE endpoint still replays PostgreSQL events after a client's acknowledged sequence, so broker or Redis loss degrades latency rather than correctness.
 
-This design is intentionally small enough to build and explain in two days, while preserving clean seams for a broker, a dedicated real-time gateway, read replicas, partitioning, presence, and richer CRDT features later. The current build already includes field-level metadata undo/redo and a Yjs description channel.
+The Go domain remains a modular monolith, while delivery concerns are separate deployables. API replicas hold no authoritative collaboration state: PostgreSQL owns relational truth, Redpanda owns replicated delivery, and Redis owns disposable awareness and local fan-out.
 
 ## 2. Requirements distilled from the assignment
 
@@ -40,7 +40,7 @@ The two-day build targets the highest-signal portions of:
 
 - **Performance and scale:** cursor pagination, virtualized rendering, indexes, a 10,000-task seed, and a repeatable load test.
 - **Developer experience:** tests, CI, OpenAPI, generated contract types, migrations, seed data, Docker, and a clean README.
-- **Advanced collaboration:** actor-scoped metadata undo/redo, a Yjs description document, project presence, live task focus/selection, activity, and @mention notifications.
+- **Advanced collaboration:** actor-scoped metadata undo/redo, a Yjs description document, unique-user task presence and selection awareness, activity, and @mention notifications.
 - **Open-ended extension:** dependency graph visualization and a native drag-and-drop Kanban board.
 
 ### 2.3 Bonus-point mapping
@@ -49,13 +49,13 @@ The two-day build targets the highest-signal portions of:
 | --- | --- | --- |
 | Undo/redo | Actor-scoped field-level inverse operations for task metadata | General command history for deletes/dependencies |
 | OT/CRDT-inspired collaboration | Yjs-backed description document over a separate WebSocket channel | Rich block editing |
-| Event-based backend | Durable append-only `sync_events` stream | Relay events to NATS/Kafka |
+| Event-based backend | Transactional `sync_events` outbox relayed to Redpanda | Dedicated gateway tier |
 | Clear domain model | Explicit Go domain services and database constraints | Extract only when scale requires it |
 | Type-safe API contract | OpenAPI as source of truth; generated Go and TypeScript types | Versioned public API SDKs |
 | Optimistic UI and rollback | Tasks, status changes, and comments | Offline mutation queue |
 | Database transactions | Domain mutation, idempotency record, and event written atomically | Distributed workflows via outbox consumers |
-| Caching strategy | Browser query cache and PostgreSQL buffer cache; no Redis without measured need | Redis for hot projections/rate limits |
-| Rate limiting/backpressure | Per-instance token buckets, payload limits, bounded SSE queues | Gateway/Redis global limits and dedicated fan-out tier |
+| Caching strategy | Browser query cache, PostgreSQL buffer cache, Redis ephemeral collaboration | Derived read projections |
+| Rate limiting/backpressure | Per-instance token buckets, payload limits, bounded queues | Edge/Redis global limits |
 
 The implementation does not call ordinary version-conflict handling a CRDT. CRDTs solve a different problem and are used only for the description field, where automatic concurrent character-level merging is valuable.
 
@@ -78,7 +78,7 @@ The implementation does not call ordinary version-conflict handling a CRDT. CRDT
 - Offline-first mutation queues; the PWA provides an installable shell and safe offline fallback.
 - General-purpose event sourcing. Current relational rows remain authoritative.
 - General-purpose rich-text/block CRDT beyond the description document.
-- Microservices, Kubernetes, Kafka, Redis, or multi-region active-active writes.
+- Kubernetes and multi-region active-active writes.
 - Full-text search, arbitrary workflow builders, Gantt charts, and external integrations.
 - Perfect fairness for a single project with extreme write contention.
 
@@ -97,25 +97,27 @@ Browser
           | REST/JSON commands and cursor queries
           | project-scoped SSE event stream
           v
-Go API modular monolith
+Stateless Go API replicas
   - HTTP transport and generated contracts
   - application services/use cases
   - domain policies
   - repositories/transactions
-  - local SSE connection hub
+  - local bounded connection hubs
           |
-          | SQL + transactional pg_notify(event cursor)
+          | SQL transaction
           v
 PostgreSQL
   - normalized current state
   - idempotency records
   - per-project stream sequence
   - durable append-only sync_events
+          |
+          `-> outbox relay -> Redpanda -> Redis -> every API replica
 ```
 
 ### 4.1 Why a modular monolith
 
-A single Go deployable keeps local development, transactions, debugging, and the two-day implementation simple. Internal package boundaries enforce separation of concerns without paying the operational cost of distributed services. The synchronization stream is already a stable extraction seam: a future relay can publish the same committed events to a broker without changing domain handlers or clients.
+The Go API remains a modular monolith for domain rules and transactions. A small relay is a separate deployable because broker delivery has a different lifecycle, not because business logic was split into services. It publishes only committed outbox rows, so domain handlers and clients do not depend on Redpanda availability.
 
 ### 4.2 Runtime components
 
@@ -244,7 +246,12 @@ starter project.
 `project_members` roles. Every project belongs to one organization, and all
 project reads, project creation, and membership invitations require an active
 organization membership. `task_attachments` stores file metadata and a
-SHA-256 checksum while the binary lives under `ATTACHMENTS_DIR`. The 25 MB
+SHA-256 checksum while the binary lives in MinIO locally and S3 in production.
+Each upload records a delayed cleanup intent before writing the object and
+cancels it inside the attachment metadata transaction. Attachment and task
+deletes enqueue object removal through a database trigger. API replicas lease
+and retry those idempotent deletion jobs, covering request failures, process
+crashes, cascades, and temporary object-store outages. The 25 MB
 per-file limit is enforced by the transport, service, and database; a project
 can still grow beyond 2 MB because task pages and event payloads remain
 bounded.
@@ -519,10 +526,10 @@ GET    /metrics
 7. Service increments project_streams.last_sequence atomically.
 8. Service inserts sync_events(project_id, sequence, ...).
 9. Service stores the idempotent response.
-10. Transaction calls pg_notify with only project ID and sequence.
-11. Commit makes state, response, event, and notification visible together.
-12. HTTP returns the canonical entity and sequence.
-13. Local and remote API instances wake, read durable events, and fan out SSE.
+10. Commit makes state, response, and event visible together.
+11. HTTP returns the canonical entity and sequence.
+12. Relay replicas claim the committed outbox row and publish it to Redpanda.
+13. A consumer group forwards the event through Redis to every API replica.
 14. Every client applies the event if its sequence/version is newer.
 ```
 
@@ -578,15 +585,17 @@ Sequence numbers are local to a project because the endpoint is project scoped. 
 - The initial activity feed is explicitly a recent-activity view over this window. A production audit history uses a separately retained projection rather than coupling audit retention to synchronization replay.
 - If the requested sequence is older than retention, the endpoint returns `409 REPLAY_WINDOW_EXPIRED`; the client clears project-scoped cache, re-runs bootstrap, and reconnects from its new cursor.
 
-### 9.4 `LISTEN/NOTIFY` is not the queue
+### 9.4 Redpanda delivery is not the transaction authority
 
-Each Go API instance holds one dedicated PostgreSQL `LISTEN` connection. A notification contains only the project ID and latest sequence. On wake-up, the instance queries durable rows and advances local subscriber cursors. Lost or coalesced notifications do not lose data because:
+`sync_events` is a transactional outbox. Competing relay replicas use `FOR UPDATE SKIP LOCKED`, while a per-project predecessor check prevents later events from overtaking an unpublished earlier sequence. Publishing can duplicate after a crash between broker acknowledgement and the database marker; consumers discard duplicates by project sequence.
+
+The distributor consumer group publishes broker messages to Redis for cross-instance fan-out. Lost or coalesced last-mile messages do not lose data because:
 
 - reconnect always reads from `sync_events`;
 - instances periodically poll for outstanding sequences while subscribers exist;
 - a process restart starts from each subscriber's cursor, not process memory.
 
-This is practical for a small deployment. It also makes replacing notifications with NATS or Kafka a transport change rather than a consistency redesign.
+Without Redpanda or Redis, the API retains the PostgreSQL polling and `LISTEN/NOTIFY` fallback used for local development.
 
 ### 9.5 Backpressure
 
@@ -700,7 +709,7 @@ Task deletion cascades assignees, tags, dependencies, and comments in the same t
 
 ### 12.3 Cache strategy
 
-The initial build deliberately does not add Redis.
+Redis is used only for ephemeral collaboration delivery and presence leases.
 
 - TanStack Query caches project/task pages and reconciles them with SSE.
 - Short `staleTime` values reduce focus refetches while reconnect logic provides correctness.
@@ -708,7 +717,7 @@ The initial build deliberately does not add Redis.
 - Highly dynamic task lists use `Cache-Control: private, no-cache`, allowing validation without serving stale shared content.
 - PostgreSQL indexes and buffer cache handle the demonstrated dataset.
 
-Add Redis only after measurement identifies a reusable, expensive read projection. Never cache the authoritative concurrency version separately from the row. For horizontal rate limits or ephemeral presence, Redis is a suitable later dependency.
+It does not cache authoritative tasks or concurrency versions. PostgreSQL remains the source for replay and all relational reads.
 
 ### 12.4 Rate limits and resource limits
 
@@ -850,6 +859,7 @@ CI runs formatting, static analysis, generated-contract drift, unit tests, Postg
 
 - `db`: PostgreSQL with a health check and named volume;
 - `migrate`: one-shot migration job that exits successfully before the API starts;
+- `minio`: local S3-compatible attachment storage with a named volume;
 - `api`: Go server on port 8080;
 - `web`: Next.js server on port 3000.
 
@@ -869,30 +879,30 @@ In production, route `/api` and `/events` through the same TLS origin to avoid C
 
 ## 18. Scaling stages
 
-### Stage 0 - two-day implementation
+### Stage 0 - distributed collaboration baseline
 
 - One or a few Go API instances.
 - One PostgreSQL primary.
 - REST + project-scoped SSE.
-- Transactional `sync_events` and `pg_notify` wake-ups.
-- In-process SSE hubs and ephemeral collaboration rooms with bounded queues.
+- Transactional `sync_events` outbox relayed to Redpanda.
+- Redis cross-instance event fan-out and leased presence.
+- Redpanda-backed Yjs update delivery across API replicas.
+- In-process hubs that own connections only and are reconstructable.
 - Cursor queries, indexes, virtualization, and browser query cache.
-- No Redis, external broker, or microservice; the isolated Yjs description runtime is included.
 
 This is the code that should actually exist and be demonstrated.
 
 ### Stage 1 - horizontal application scale
 
 - Put stateless Go instances behind a load balancer; sticky sessions are unnecessary.
-- Every instance listens for PostgreSQL notifications and serves its own connected clients.
+- Every instance receives Redis last-mile messages and serves its own connected clients.
 - Use a connection pooler if instance count grows.
-- Move global rate limiting and ephemeral presence to Redis or the edge.
+- Move global rate limiting to Redis or the edge.
 - Add read replicas for eventually consistent list/report queries, while mutations and bootstrap cursor snapshots stay on the primary.
 
-### Stage 2 - dedicated event delivery
+### Stage 2 - dedicated gateways and projections
 
-- Add a relay that reads committed `sync_events` and publishes to NATS JetStream, Redis Streams, or Kafka.
-- Partition broker messages by `project_id` to preserve project order.
+- Increase Redpanda partitions and replication; keep `project_id` as the key.
 - Split the SSE gateway from the API when connection count, not business traffic, drives scale.
 - Preserve PostgreSQL replay initially; later use the broker's retained stream where its guarantees and retention are sufficient.
 - Use consumer offsets and event request IDs for at-least-once, idempotent consumption.
@@ -905,7 +915,7 @@ There is no database-and-broker dual write. The durable database event is always
 - Partition tasks by project/tenant if database measurements justify it.
 - Add derived read models for activity, analytics, and search.
 - Isolate hot projects across stream partitions and real-time gateway shards.
-- Add a separate presence/cursor channel because ephemeral events do not need durable replay.
+- Shard Redis presence/cursor channels as concurrent project count grows.
 - Compact Yjs description snapshots plus incremental CRDT updates on a bounded schedule; add awareness/presence as an ephemeral channel.
 - Consider regional read delivery and a single write home per project before attempting multi-region active-active writes.
 
@@ -917,12 +927,13 @@ There is no database-and-broker dual write. The durable database event is always
 | PostgreSQL authoritative state | Familiar queries and invariants | Primary remains write coordinator |
 | Durable change stream, not full event sourcing | Reliable replay without rebuilding all state from events | Historical events cannot reconstruct every past entity version |
 | SSE for durable updates | Simple one-way protocol and reconnect model | Not suited to cursors/CRDT operations |
-| `LISTEN/NOTIFY` as wake-up only | Low latency with no new infrastructure | Fan-out cost grows with many API instances |
+| Redpanda outbox delivery | Durable ordered transport without a database/broker dual write | At-least-once consumers must deduplicate |
 | Project-local sequence | Correct, simple replay order | Stream allocation serializes briefly per project |
 | Optimistic concurrency | Prevents silent lost updates | User may need to resolve a conflict |
 | Advisory lock for graph writes | Correct cycle prevention under concurrency | Same-project dependency writes serialize |
 | Normalized queryable fields + JSONB custom fields | Good integrity and extension flexibility | JSONB fields have weaker schema and should not absorb core fields |
-| No Redis initially | Fewer failure modes and honest scope | Approximate limits per instance; presence is local to the collaboration room |
+| Redis for ephemeral fan-out | Cross-instance presence and low-latency delivery | Redis loss temporarily removes awareness |
+| S3-compatible attachment storage | Every API replica reads the same durable objects | Binary writes use cleanup intents rather than a distributed database/S3 transaction |
 | CRDT limited to text only | Core metadata semantics stay understandable | Block-level formatting remains future work; live selection is ephemeral awareness |
 
 ## 20. Two-day implementation order
@@ -1016,7 +1027,7 @@ The most compelling message is not that the application broadcasts updates. It i
 | ADR-006 | Use OpenAPI-generated Go and TypeScript contracts | Implement now |
 | ADR-007 | Use keyset pagination and virtualized rendering | Implement now |
 | ADR-008 | Use optimistic concurrency and idempotent mutations | Implement now |
-| ADR-009 | Use PostgreSQL notification only as a wake-up hint | Implement now |
-| ADR-010 | Avoid Redis, broker, and microservices in the initial build | Implement now |
-| ADR-011 | Add a broker/realtime gateway only after measured scaling pressure | Future |
+| ADR-009 | Use `sync_events` as a transactional outbox | Implement now |
+| ADR-010 | Use the Kafka protocol through Redpanda for durable delivery | Implement now |
+| ADR-011 | Use Redis only for ephemeral presence and last-mile fan-out | Implement now |
 | ADR-012 | Use a separate CRDT channel only for collaborative text | Implement now |

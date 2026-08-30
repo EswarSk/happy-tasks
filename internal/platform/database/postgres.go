@@ -314,6 +314,59 @@ func (p *Postgres) GetTask(ctx context.Context, projectID, taskID string) (domai
 	return getTask(ctx, p.pool, projectID, taskID)
 }
 
+func (p *Postgres) ScheduleAttachmentObjectCleanup(ctx context.Context, storageKey string, deleteAfter time.Time) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO attachment_object_deletions(storage_key, delete_after)
+		VALUES ($1, $2)
+		ON CONFLICT (storage_key) DO UPDATE
+		SET delete_after = EXCLUDED.delete_after, lease_until = NULL`, storageKey, deleteAfter)
+	return err
+}
+
+func (p *Postgres) ClaimAttachmentObjectCleanup(ctx context.Context, limit int) ([]string, error) {
+	rows, err := p.pool.Query(ctx, `
+		WITH candidates AS (
+			SELECT storage_key
+			FROM attachment_object_deletions
+			WHERE delete_after <= now()
+			  AND (lease_until IS NULL OR lease_until <= now())
+			ORDER BY delete_after, storage_key
+			FOR UPDATE SKIP LOCKED
+			LIMIT $1
+		)
+		UPDATE attachment_object_deletions cleanup
+		SET lease_until = now() + interval '1 minute'
+		FROM candidates
+		WHERE cleanup.storage_key = candidates.storage_key
+		RETURNING cleanup.storage_key`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make([]string, 0, limit)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+func (p *Postgres) CompleteAttachmentObjectCleanup(ctx context.Context, storageKey string) error {
+	_, err := p.pool.Exec(ctx, `DELETE FROM attachment_object_deletions WHERE storage_key = $1`, storageKey)
+	return err
+}
+
+func (p *Postgres) RetryAttachmentObjectCleanup(ctx context.Context, storageKey string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE attachment_object_deletions
+		SET delete_after = now() + interval '30 seconds', lease_until = NULL
+		WHERE storage_key = $1`, storageKey)
+	return err
+}
+
 func (p *Postgres) ListAttachments(ctx context.Context, projectID, taskID string) ([]domain.Attachment, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at
@@ -535,6 +588,62 @@ func (p *Postgres) ProjectStreamCursor(ctx context.Context, projectID string) (i
 		return 0, domain.ErrNotFound
 	}
 	return cursor, err
+}
+
+// PublishOutboxBatch lets competing relay replicas claim committed events with
+// SKIP LOCKED. The broker publish happens while the row is locked; a crash after
+// publish but before commit can duplicate an event, which consumers already
+// tolerate through project sequence numbers.
+func (p *Postgres) PublishOutboxBatch(ctx context.Context, limit int, publish func(domain.Event) error) (int, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	published := 0
+	for published < limit {
+		tx, err := p.pool.Begin(ctx)
+		if err != nil {
+			return published, err
+		}
+		event, err := scanEvent(tx.QueryRow(ctx, `
+			SELECT project_id, sequence, event_type, aggregate_type, aggregate_id,
+			       aggregate_version, actor_id, request_id, payload, occurred_at
+			FROM sync_events
+			WHERE published_at IS NULL
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM sync_events earlier
+				WHERE earlier.project_id = sync_events.project_id
+				  AND earlier.sequence < sync_events.sequence
+				  AND earlier.published_at IS NULL
+			  )
+			ORDER BY occurred_at, project_id, sequence
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1`))
+		if errors.Is(err, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			return published, nil
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return published, err
+		}
+		if err := publish(event); err != nil {
+			_ = tx.Rollback(ctx)
+			return published, err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE sync_events
+			SET published_at = now()
+			WHERE project_id = $1 AND sequence = $2`, event.ProjectID, event.Sequence); err != nil {
+			_ = tx.Rollback(ctx)
+			return published, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return published, err
+		}
+		published++
+	}
+	return published, nil
 }
 
 // Listen consumes only wake-up hints. SSE correctness comes from ListEvents.
@@ -802,7 +911,7 @@ func (s *store) CreateTask(ctx context.Context, projectID string, input app.Crea
 }
 
 func (s *store) CreateAttachment(ctx context.Context, input app.CreateAttachmentInput) (domain.Attachment, error) {
-	return scanAttachment(s.q.QueryRow(ctx, `
+	item, err := scanAttachment(s.q.QueryRow(ctx, `
 		INSERT INTO task_attachments(
 			id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by
 		)
@@ -810,6 +919,13 @@ func (s *store) CreateAttachment(ctx context.Context, input app.CreateAttachment
 		RETURNING id, project_id, task_id, file_name, content_type, byte_size, checksum, storage_key, uploaded_by, created_at`,
 		input.ID, input.ProjectID, input.TaskID, input.FileName, input.ContentType, input.ByteSize,
 		input.Checksum, input.StorageKey, input.UploadedBy))
+	if err != nil {
+		return domain.Attachment{}, mapConstraintError(err)
+	}
+	if _, err := s.q.Exec(ctx, `DELETE FROM attachment_object_deletions WHERE storage_key = $1`, input.StorageKey); err != nil {
+		return domain.Attachment{}, err
+	}
+	return item, nil
 }
 
 func (s *store) DeleteAttachment(ctx context.Context, projectID, taskID, attachmentID string) (domain.Attachment, error) {
@@ -850,7 +966,10 @@ func (s *store) InitializeTaskDescriptionDocument(ctx context.Context, projectID
 func (s *store) AppendTaskDescriptionUpdate(ctx context.Context, projectID, taskID, actorID string, update []byte) error {
 	_, err := s.q.Exec(ctx, `
 		INSERT INTO task_description_updates(project_id, task_id, actor_id, update_data)
-		VALUES ($1, $2, $3, $4)`, projectID, taskID, actorID, update)
+		SELECT $1, $2, $3, $4
+		FROM task_description_documents
+		WHERE project_id = $1 AND task_id = $2
+		FOR UPDATE`, projectID, taskID, actorID, update)
 	return err
 }
 

@@ -11,7 +11,8 @@ BEGIN
             ('users'), ('projects'), ('project_members'), ('tasks'),
             ('task_assignees'), ('task_tags'), ('task_dependencies'),
             ('comments'), ('comment_reactions'), ('notifications'), ('project_streams'), ('sync_events'),
-            ('idempotency_keys'), ('organizations'), ('organization_members'), ('auth_sessions'), ('task_attachments')
+            ('idempotency_keys'), ('organizations'), ('organization_members'), ('auth_sessions'), ('task_attachments'),
+            ('attachment_object_deletions')
     ) AS expected(name)
     WHERE to_regclass('public.' || expected.name) IS NULL;
 

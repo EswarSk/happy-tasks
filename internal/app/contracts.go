@@ -220,6 +220,7 @@ type Database interface {
 	GetTaskDescriptionDocument(context.Context, string, string) (domain.TaskDescriptionDocument, error)
 	ListAttachments(context.Context, string, string) ([]domain.Attachment, error)
 	GetAttachment(context.Context, string, string, string) (domain.Attachment, error)
+	ScheduleAttachmentObjectCleanup(context.Context, string, time.Time) error
 	CreateUser(context.Context, string, string, string) (domain.User, error)
 	GetAuthUser(context.Context, string) (domain.AuthUser, error)
 	CreateAuthSession(context.Context, string, []byte, time.Time) error

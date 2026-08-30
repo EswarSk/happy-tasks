@@ -1,7 +1,11 @@
 import * as Y from "../../apps/web/node_modules/yjs/dist/yjs.mjs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
-const baseUrl = process.env.BASE_URL || "http://127.0.0.1:8080";
+const baseUrls = (process.env.BASE_URLS || process.env.BASE_URL || "http://127.0.0.1:8080")
+  .split(",")
+  .map((url) => url.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+const baseUrl = baseUrls[0];
 const projectId = process.env.PROJECT_ID || "02000000-0000-7000-8000-000000000002";
 const taskId = process.env.TASK_ID;
 const clientCount = Number(process.env.CLIENTS || 100);
@@ -45,9 +49,10 @@ async function sessions() {
 
 function connect(session, index, retry = 0) {
   return new Promise((resolve) => {
+    const clientBaseUrl = baseUrls[index % baseUrls.length];
     const headers = { Cookie: `happy_tasks_session=${session}`, Origin: "http://127.0.0.1:3000" };
     if (distinctSourceIps) headers["X-Forwarded-For"] = `2001:db8::${index + 1}`;
-    const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/v1/projects/${projectId}/tasks/${taskId}/description/live`, { headers });
+    const socket = new WebSocket(`${clientBaseUrl.replace(/^http/, "ws")}/v1/projects/${projectId}/tasks/${taskId}/description/live`, { headers });
     const doc = new Y.Doc();
     const text = doc.getText("description");
     let initialized = false;
@@ -160,12 +165,16 @@ if (durationMs > 0) {
   };
 }
 await new Promise((resolve) => setTimeout(resolve, 3_000));
+const documentHashes = ready.map((client) => createHash("sha256").update(client.text.toString()).digest("hex"));
 for (const client of clients) client.socket.close();
 
 console.log(JSON.stringify({
+  nodes: baseUrls,
   clients: clientCount,
   ready: ready.length,
   rejected: clients.length - ready.length,
+  converged: documentHashes.length > 0 && new Set(documentHashes).size === 1,
+  documentHash: documentHashes[0],
   ...editSummary,
   editsFailed: editSummary.editsAttempted - editSummary.editsAcked,
 }, null, 2));

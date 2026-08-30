@@ -502,7 +502,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description WebSocket endpoint for ephemeral project presence and task text selections. These frames are intentionally not durable. */
+        /** @description WebSocket transport for ephemeral task presence and text selections. Sessions are deduplicated by actor in the task UI and are intentionally not durable. */
         get: operations["collaborateProjectPresence"];
         put?: never;
         post?: never;

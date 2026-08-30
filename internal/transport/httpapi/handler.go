@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +18,8 @@ import (
 
 	"github.com/eswaravegi/happy-task-management/internal/app"
 	"github.com/eswaravegi/happy-task-management/internal/domain"
+	"github.com/eswaravegi/happy-task-management/internal/messaging"
+	"github.com/eswaravegi/happy-task-management/internal/platform/objectstorage"
 	"github.com/eswaravegi/happy-task-management/internal/syncstream"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -30,6 +31,7 @@ const maxRequestBody = 1 << 20
 const maxAttachmentBytes = 25 << 20
 
 type Handler struct {
+	router             http.Handler
 	service            *app.Service
 	hub                *syncstream.Hub
 	descriptionHub     *descriptionHub
@@ -41,27 +43,27 @@ type Handler struct {
 	rateLimiter        *rateLimiter
 	authRequired       bool
 	secureCookies      bool
-	attachmentsDir     string
+	attachments        *objectstorage.S3
+	realtime           *messaging.Redis
+	documentProducer   *messaging.Producer
 }
 
 type Config struct {
-	AuthRequired   bool
-	SecureCookies  bool
-	AttachmentsDir string
+	AuthRequired     bool
+	SecureCookies    bool
+	Attachments      *objectstorage.S3
+	Realtime         *messaging.Redis
+	DocumentProducer *messaging.Producer
 }
 
 type authUserKey struct{}
 
-func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger, config Config) http.Handler {
+func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allowActorOverride bool, allowedOrigins []string, logger *slog.Logger, config Config) *Handler {
 	originSet := make(map[string]struct{}, len(allowedOrigins))
 	for _, origin := range allowedOrigins {
 		originSet[strings.TrimSuffix(origin, "/")] = struct{}{}
 	}
-	if config.AttachmentsDir == "" {
-		config.AttachmentsDir = ".data/attachments"
-	}
-	_ = os.MkdirAll(config.AttachmentsDir, 0o700)
-	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter(), authRequired: config.AuthRequired, secureCookies: config.SecureCookies, attachmentsDir: config.AttachmentsDir}
+	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter(), authRequired: config.AuthRequired, secureCookies: config.SecureCookies, attachments: config.Attachments, realtime: config.Realtime, documentProducer: config.DocumentProducer}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -122,7 +124,18 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 			})
 		})
 	})
-	return router
+	h.router = router
+	return h
+}
+
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.router.ServeHTTP(w, r) }
+
+func (h *Handler) PublishDocumentUpdate(update messaging.DocumentUpdate) {
+	h.descriptionHub.broadcast(update.ProjectID+":"+update.TaskID, nil, descriptionFrame{Type: "update", Update: update.Update, Text: update.Text, ActorID: update.ActorID})
+}
+
+func (h *Handler) PublishPresence(projectID string, item messaging.Presence) {
+	h.presenceHub.broadcastSession(projectID, item.SessionID, presenceFrame{Type: item.Type, SessionID: item.SessionID, ActorID: item.ActorID, TaskID: item.TaskID, SelectionFrom: item.SelectionFrom, SelectionTo: item.SelectionTo})
 }
 
 type createProjectRequest struct {
@@ -531,11 +544,16 @@ func (h *Handler) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+1<<20)
+	if err := h.service.AuthorizeAttachmentUpload(r.Context(), h.actorID(r), projectID, taskID); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentBytes+(1<<20))
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
 		h.writeError(w, r, domain.Validation("PAYLOAD_TOO_LARGE", "The uploaded file is too large or malformed.", nil))
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		h.writeError(w, r, domain.Validation("VALIDATION_ERROR", "A file is required.", nil))
@@ -554,18 +572,10 @@ func (h *Handler) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		declaredType = parsed
 	}
 
-	temp, err := os.CreateTemp(h.attachmentsDir, ".upload-*")
-	if err != nil {
-		h.writeError(w, r, err)
-		return
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
 	digest := sha256.New()
 	head := make([]byte, 512)
 	readCount, readErr := file.Read(head)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		_ = temp.Close()
 		h.writeError(w, r, readErr)
 		return
 	}
@@ -574,21 +584,14 @@ func (h *Handler) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	written := int64(0)
 	if readCount > 0 {
-		if _, err := io.MultiWriter(temp, digest).Write(head[:readCount]); err != nil {
-			_ = temp.Close()
-			h.writeError(w, r, err)
-			return
-		}
+		_, _ = digest.Write(head[:readCount])
 		written = int64(readCount)
 	}
 	copyErr := error(nil)
 	if written <= maxAttachmentBytes {
 		var copied int64
-		copied, copyErr = io.Copy(io.MultiWriter(temp, digest), io.LimitReader(file, maxAttachmentBytes+1-written))
+		copied, copyErr = io.Copy(digest, io.LimitReader(file, maxAttachmentBytes+1-written))
 		written += copied
-	}
-	if closeErr := temp.Close(); copyErr == nil {
-		copyErr = closeErr
 	}
 	if copyErr != nil {
 		h.writeError(w, r, copyErr)
@@ -611,32 +614,28 @@ func (h *Handler) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 		h.validationError(w, r, "id", "must be a UUID")
 		return
 	}
-	storagePath := filepath.Join(h.attachmentsDir, attachmentID)
-	if _, statErr := os.Stat(storagePath); statErr == nil {
-		h.writeError(w, r, domain.Validation("ALREADY_EXISTS", "That attachment already exists.", nil))
-		return
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		h.writeError(w, r, statErr)
-		return
-	}
-	if err := os.Rename(tempPath, storagePath); err != nil {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		h.writeError(w, r, err)
 		return
 	}
 	digestHex := hex.EncodeToString(digest.Sum(nil))
+	storageKey := strings.Join([]string{projectID, taskID, attachmentID, uuid.Must(uuid.NewV7()).String()}, "/")
+	if err := h.service.ScheduleAttachmentObjectCleanup(r.Context(), storageKey, time.Now().Add(15*time.Minute)); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	if err := h.attachments.Put(r.Context(), storageKey, declaredType, written, file); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
 	meta := h.mutationMeta(r, []byte(strings.Join([]string{attachmentID, fileName, declaredType, strconv.FormatInt(written, 10), digestHex}, "\n")))
 	result, err := h.service.CreateAttachment(r.Context(), meta, app.CreateAttachmentInput{
 		ID: attachmentID, ProjectID: projectID, TaskID: taskID, FileName: fileName,
-		ContentType: declaredType, ByteSize: written, Checksum: digestHex, StorageKey: attachmentID,
+		ContentType: declaredType, ByteSize: written, Checksum: digestHex, StorageKey: storageKey,
 	})
-	if err != nil || result.Replayed {
-		if !result.Replayed {
-			_ = os.Remove(storagePath)
-		}
-		if err != nil {
-			h.writeError(w, r, err)
-			return
-		}
+	if err != nil {
+		h.writeError(w, r, err)
+		return
 	}
 	result.Value.StorageKey = ""
 	writeMutation(w, http.StatusCreated, result.StreamCursor, result.Replayed, result.Value)
@@ -656,14 +655,25 @@ func (h *Handler) downloadAttachment(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	if filepath.Base(attachment.StorageKey) != attachment.StorageKey {
-		h.writeError(w, r, errors.New("invalid attachment storage key"))
+	object, err := h.attachments.Get(r.Context(), attachment.StorageKey)
+	if err != nil {
+		h.writeError(w, r, err)
 		return
 	}
+	defer object.Body.Close()
 	w.Header().Set("Content-Type", attachment.ContentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeHeaderFilename(attachment.FileName)))
-	http.ServeFile(w, r, filepath.Join(h.attachmentsDir, attachment.StorageKey))
+	if object.Length >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(object.Length, 10))
+	}
+	if !object.LastModified.IsZero() {
+		w.Header().Set("Last-Modified", object.LastModified.UTC().Format(http.TimeFormat))
+	}
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, object.Body); err != nil {
+		h.logger.Warn("attachment download interrupted", "error", err, "storage_key", attachment.StorageKey)
+	}
 }
 
 func (h *Handler) deleteAttachment(w http.ResponseWriter, r *http.Request) {
@@ -679,9 +689,6 @@ func (h *Handler) deleteAttachment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeError(w, r, err)
 		return
-	}
-	if result.Value.StorageKey != "" {
-		_ = os.Remove(filepath.Join(h.attachmentsDir, filepath.Base(result.Value.StorageKey)))
 	}
 	result.Value.StorageKey = ""
 	writeMutation(w, http.StatusOK, result.StreamCursor, result.Replayed, result.Value)
@@ -1064,22 +1071,22 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	wakeup, unsubscribe := h.hub.Subscribe(projectID)
+	notices, unsubscribe := h.hub.Subscribe(projectID)
 	defer unsubscribe()
 
 	heartbeat := time.NewTicker(15 * time.Second)
 	poll := time.NewTicker(2 * time.Second)
 	defer heartbeat.Stop()
 	defer poll.Stop()
-	for {
+	replay := func() error {
 		for {
 			events, err := h.service.ReplayEvents(r.Context(), projectID, after, 200)
 			if err != nil {
-				return
+				return err
 			}
 			for _, event := range events {
 				if err := writeSSE(w, event); err != nil {
-					return
+					return err
 				}
 				after = event.Sequence
 			}
@@ -1088,11 +1095,34 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		flusher.Flush()
+		return nil
+	}
+	if replay() != nil {
+		return
+	}
+	for {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-wakeup:
+		case notice := <-notices:
+			if notice.Event != nil && notice.Event.Sequence == after+1 {
+				if writeSSE(w, *notice.Event) != nil {
+					return
+				}
+				after = notice.Event.Sequence
+				flusher.Flush()
+				continue
+			}
+			if notice.Event != nil && notice.Event.Sequence <= after {
+				continue
+			}
+			if replay() != nil {
+				return
+			}
 		case <-poll.C:
+			if replay() != nil {
+				return
+			}
 		case <-heartbeat.C:
 			// Membership is leased, not captured forever. Revocation closes the
 			// stream within one heartbeat even across API instances.

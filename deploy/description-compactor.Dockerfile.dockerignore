@@ -1,0 +1,4 @@
+**
+!workers/description-compactor/package.json
+!workers/description-compactor/package-lock.json
+!workers/description-compactor/*.mjs

@@ -12,12 +12,13 @@ import { Input, Textarea } from "@/components/ui/input";
 import { OptimisticStateIndicator } from "@/components/patterns/optimistic-state";
 import { PrioritySelect, StatusIcon, TaskStatusSelect, statusLabels } from "@/components/patterns/task-badges";
 import { CommentThread } from "@/features/comments/comment-thread";
+import { PresenceStrip } from "@/features/collaboration/presence-strip";
 import { AssigneePicker } from "./assignee-picker";
 import { AssignmentHistory } from "./assignment-history";
 import { CollaborativeDescription } from "./collaborative-description";
 import { TaskDependencyGraph } from "./task-dependency-graph";
 import { patchTaskInCache, removeTaskFromCache } from "./query-cache";
-import type { Member, Task, UpdateTaskInput } from "@/lib/api";
+import type { Attachment, Member, Task, UpdateTaskInput } from "@/lib/api";
 import { WorkspaceApiError, dataSource, workspaceApi } from "@/lib/api";
 import type { CollaboratorPresence } from "@/features/collaboration/use-project-presence";
 
@@ -123,7 +124,10 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
       if (file.size > 25 * 1024 * 1024) throw new Error("Each file must be 25 MB or smaller.");
       return workspaceApi.uploadAttachment(projectId, taskId, file);
     },
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["attachments", projectId, taskId] }); toast.success("File attached"); },
+    onSuccess: (attachment) => {
+      queryClient.setQueryData<Attachment[]>(["attachments", projectId, taskId], (current = []) => [attachment, ...current.filter((item) => item.id !== attachment.id)]);
+      toast.success("File attached");
+    },
     onError: (error) => toast.error(error instanceof Error ? error.message : "File could not be attached"),
   });
   const deleteAttachment = useMutation({
@@ -183,6 +187,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
           <Button variant="ghost" size="icon" aria-label="Close task details" onClick={onClose}><X className="size-4" /></Button>
         </div>
         <Input value={title} onChange={(event) => setDraft({ taskId: task.id, title: event.target.value, description })} className="h-auto min-w-0 truncate rounded-none border-0 bg-transparent px-0 py-1 text-lg font-semibold shadow-none focus:bg-transparent focus:ring-0" aria-label="Task title" />
+        <PresenceStrip collaborators={collaborators} members={members} />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -227,7 +232,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
           <section aria-labelledby="attachments-heading" className="border-b border-[var(--border-subtle)] py-5">
             <div className="flex items-center justify-between"><h2 id="attachments-heading" className="section-label">Files</h2><label className="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--border)] px-3 text-xs font-medium hover:bg-[var(--hover)]"><Paperclip className="size-3.5" />Attach<input type="file" className="sr-only" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md" disabled={uploadAttachment.isPending} onChange={(event) => { const file = event.target.files?.[0]; if (file) uploadAttachment.mutate(file); event.currentTarget.value = ""; }} /></label></div>
             <div className="mt-3 space-y-2">
-              {attachmentsQuery.data?.map((attachment) => <div key={attachment.id} className="flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2"><FileText className="size-4 shrink-0 text-[var(--text-muted)]" /><a href={workspaceApi.attachmentUrl(projectId, taskId, attachment.id)} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-xs font-medium underline-offset-2 hover:underline">{attachment.fileName}<span className="ml-1 font-normal text-[var(--text-muted)]">{formatBytes(attachment.byteSize)}</span></a><Button type="button" variant="ghost" size="icon" className="size-7" aria-label={`Remove ${attachment.fileName}`} disabled={deleteAttachment.isPending} onClick={() => deleteAttachment.mutate(attachment.id)}><X className="size-3.5" /></Button></div>)}
+              {attachmentsQuery.data?.map((attachment) => <div key={attachment.id} className="flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2"><FileText className="size-4 shrink-0 text-[var(--text-muted)]" /><a href={workspaceApi.attachmentUrl(projectId, taskId, attachment.id)} download={attachment.fileName} className="min-w-0 flex-1 truncate text-xs font-medium underline-offset-2 hover:underline">{attachment.fileName}<span className="ml-1 font-normal text-[var(--text-muted)]">{formatBytes(attachment.byteSize)}</span></a><Button type="button" variant="ghost" size="icon" className="size-7" aria-label={`Remove ${attachment.fileName}`} disabled={deleteAttachment.isPending} onClick={() => deleteAttachment.mutate(attachment.id)}><X className="size-3.5" /></Button></div>)}
               {!attachmentsQuery.isLoading && !attachmentsQuery.data?.length && <p className="text-xs text-[var(--text-muted)]">Attach a document or photo. Files can be up to 25 MB.</p>}
             </div>
           </section>

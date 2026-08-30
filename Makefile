@@ -11,14 +11,14 @@ DB_CONTAINER_URL := postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@db:5432/$(P
 .DEFAULT_GOAL := help
 
 .PHONY: help stack-up stack-down db-up db-down db-reset migrate-up migrate-down \
-	migrate-status seed-demo seed-scale seed-scenarios db-verify dev test test-backend test-web test-e2e \
+	migrate-status seed-demo seed-scale seed-scenarios db-verify dev test test-backend test-web test-workers test-e2e \
 	lint build build-backend build-web load logs generate-contracts
 
 help:
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-stack-up: ## Build and start database, migrations, API, and web
-	$(COMPOSE) up --build -d --wait db migrate api web
+stack-up: ## Build and start the complete distributed local stack
+	$(COMPOSE) up --build -d --wait db migrate redis redpanda minio relay description-compactor api web
 
 stack-down: ## Stop the stack while preserving database data
 	$(COMPOSE) down --remove-orphans
@@ -54,15 +54,19 @@ db-verify: seed-demo ## Verify schema, isolation constraints, indexes, and query
 	./scripts/db-verify.sh
 
 dev: ## Build and run the complete local application in the foreground
-	$(COMPOSE) up --build db migrate api web
+	$(COMPOSE) up --build db migrate redis redpanda minio relay description-compactor api web
 
-test: test-backend test-web ## Run backend and frontend test suites
+test: test-backend test-web test-workers ## Run backend, frontend, and worker test suites
 
 test-backend: ## Run Go tests in the pinned build image
 	docker run --rm -v "$(CURDIR):/src" -w /src golang:1.23-alpine go test ./cmd/... ./internal/...
 
 test-web: ## Run frontend tests when present
 	npm --prefix apps/web run test --if-present
+
+test-workers: ## Run the description compactor worker tests
+	npm --prefix workers/description-compactor ci
+	npm --prefix workers/description-compactor test
 
 test-e2e: ## Run the focused browser smoke tests
 	npm --prefix apps/web run test:e2e
@@ -86,5 +90,5 @@ load: seed-scale ## Run the checked-in k6 task-list scenario
 generate-contracts: ## Generate Go and TypeScript types from OpenAPI
 	./scripts/generate-api-contracts.sh
 
-logs: ## Follow application and database logs
-	$(COMPOSE) logs -f db api web
+logs: ## Follow application and collaboration infrastructure logs
+	$(COMPOSE) logs -f db redis redpanda minio relay description-compactor api web

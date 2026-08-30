@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/eswaravegi/happy-task-management/internal/app"
 	"github.com/eswaravegi/happy-task-management/internal/domain"
@@ -69,6 +71,31 @@ func TestTransactionalFlows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create task: %v", err)
 		}
+	}
+
+	attachmentID := uuid.Must(uuid.NewV7()).String()
+	storageKey := "integration/" + uuid.Must(uuid.NewV7()).String()
+	if err := db.ScheduleAttachmentObjectCleanup(ctx, storageKey, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("schedule attachment cleanup: %v", err)
+	}
+	if _, err := service.CreateAttachment(ctx, testMeta("attachment:"+attachmentID), app.CreateAttachmentInput{
+		ID: attachmentID, ProjectID: testProject, TaskID: taskA, FileName: "test.txt", ContentType: "text/plain",
+		ByteSize: 4, Checksum: strings.Repeat("a", 64), StorageKey: storageKey,
+	}); err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	if keys, err := db.ClaimAttachmentObjectCleanup(ctx, 10); err != nil || contains(keys, storageKey) {
+		t.Fatalf("committed attachment retained cleanup intent: keys=%v error=%v", keys, err)
+	}
+	if _, err := service.DeleteAttachment(ctx, testMeta("delete-attachment:"+attachmentID), testProject, taskA, attachmentID); err != nil {
+		t.Fatalf("delete attachment: %v", err)
+	}
+	keys, err := db.ClaimAttachmentObjectCleanup(ctx, 10)
+	if err != nil || !contains(keys, storageKey) {
+		t.Fatalf("deleted attachment did not enqueue object cleanup: keys=%v error=%v", keys, err)
+	}
+	if err := db.CompleteAttachmentObjectCleanup(ctx, storageKey); err != nil {
+		t.Fatalf("complete attachment cleanup: %v", err)
 	}
 
 	// Two fresh clients can both observe an uninitialized Yjs document. The
@@ -175,4 +202,13 @@ func assertDomainCode(t *testing.T, err error, code string) {
 	if !errors.As(err, &domainErr) || domainErr.Code != code {
 		t.Fatalf("error = %v, want domain code %s", err, code)
 	}
+}
+
+func contains(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

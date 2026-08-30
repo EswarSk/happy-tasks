@@ -39,6 +39,94 @@ services:
         condition: service_healthy
     restart: "no"
 
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, "no", --save, ""]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redpanda:
+    image: redpandadata/redpanda:v24.3.6
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:${REDPANDA_PORT:-19092}
+    ports:
+      - "${REDPANDA_PORT:-19092}:19092"
+    healthcheck:
+      test: [CMD, rpk, cluster, health, --exit-when-healthy, -X, brokers=localhost:9092]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  relay:
+    build:
+      context: .
+      dockerfile: deploy/relay.Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-taskapp}:${POSTGRES_PASSWORD:-taskapp}@db:5432/${POSTGRES_DB:-taskapp}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      REDPANDA_BROKERS: redpanda:9092
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+
+  description-compactor:
+    build:
+      context: .
+      dockerfile: deploy/description-compactor.Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-taskapp}:${POSTGRES_PASSWORD:-taskapp}@db:5432/${POSTGRES_DB:-taskapp}?sslmode=disable
+      COMPACTION_THRESHOLD: ${COMPACTION_THRESHOLD:-500}
+      COMPACTION_INTERVAL_MS: ${COMPACTION_INTERVAL_MS:-5000}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -51,17 +139,29 @@ services:
       DEFAULT_ACTOR_ID: ${DEFAULT_ACTOR_ID:-00000000-0000-7000-8000-000000000001}
       AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
-      ATTACHMENTS_DIR: /data/attachments
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: "true"
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-happy-task-attachments}
+      S3_CREATE_BUCKET: "true"
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      REDIS_URL: redis://redis:6379/0
+      REDPANDA_BROKERS: redpanda:9092
     ports:
       - "${API_PORT:-8080}:8080"
-    volumes:
-      - attachments_data:/data/attachments
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -127,5 +227,5 @@ services:
 volumes:
   postgres_data:
     name: happy-task-management-postgres-data
-  attachments_data:
-    name: happy-task-management-attachments-data
+  minio_data:
+    name: happy-task-management-minio-data

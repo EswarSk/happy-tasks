@@ -1,5 +1,10 @@
 # Load-test results
 
+> These baselines predate the Redpanda outbox relay and Redis cross-instance
+> fan-out introduced on 2026-08-29. They remain useful database/API references,
+> but distributed SSE, presence, and Yjs results must be recorded separately
+> before making a production capacity claim.
+
 The checked-in scenario at [`scripts/load/tasks.js`](../scripts/load/tasks.js)
 measures authenticated, cursor-backed task-page reads against the seeded
 10,000-task project. Run it after starting the Compose stack and loading the

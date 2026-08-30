@@ -166,9 +166,12 @@ func runMutation[T any](ctx context.Context, service *Service, meta MutationMeta
 		if err != nil {
 			return err
 		}
-		event, err := store.AppendEvent(ctx, value.event)
-		if err != nil {
-			return err
+		var event domain.Event
+		if value.event.ProjectID != "" {
+			event, err = store.AppendEvent(ctx, value.event)
+			if err != nil {
+				return err
+			}
 		}
 		body, err := json.Marshal(value.value)
 		if err != nil {
@@ -269,6 +272,19 @@ func (s *Service) GetTask(ctx context.Context, actorID, projectID, taskID string
 	return s.db.GetTask(ctx, projectID, taskID)
 }
 
+func (s *Service) CanMutateProject(ctx context.Context, actorID, projectID string) (bool, error) {
+	allowed := false
+	err := s.db.WithinTx(ctx, func(store Store) error {
+		membership, err := store.GetActiveMembership(ctx, projectID, actorID)
+		if err != nil {
+			return err
+		}
+		allowed = domain.CanMutateProject(membership.Role)
+		return nil
+	})
+	return allowed, err
+}
+
 func (s *Service) ListAttachments(ctx context.Context, actorID, projectID, taskID string) ([]domain.Attachment, error) {
 	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
 		return nil, err
@@ -281,6 +297,20 @@ func (s *Service) GetAttachment(ctx context.Context, actorID, projectID, taskID,
 		return domain.Attachment{}, err
 	}
 	return s.db.GetAttachment(ctx, projectID, taskID, attachmentID)
+}
+
+func (s *Service) AuthorizeAttachmentUpload(ctx context.Context, actorID, projectID, taskID string) error {
+	return s.db.WithinTx(ctx, func(store Store) error {
+		if err := requireMember(ctx, store, projectID, actorID); err != nil {
+			return err
+		}
+		_, err := store.GetTask(ctx, projectID, taskID)
+		return err
+	})
+}
+
+func (s *Service) ScheduleAttachmentObjectCleanup(ctx context.Context, storageKey string, deleteAfter time.Time) error {
+	return s.db.ScheduleAttachmentObjectCleanup(ctx, storageKey, deleteAfter)
 }
 
 func (s *Service) CreateAttachment(ctx context.Context, meta MutationMeta, input CreateAttachmentInput) (Mutation[domain.Attachment], error) {
@@ -358,7 +388,7 @@ func (s *Service) PersistTaskDescriptionUpdate(ctx context.Context, meta Mutatio
 		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		if _, err := store.GetTaskForUpdate(ctx, projectID, taskID); err != nil {
+		if _, err := store.GetTask(ctx, projectID, taskID); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
 		if err := store.EnsureTaskDescriptionDocument(ctx, projectID, taskID); err != nil {
@@ -382,11 +412,7 @@ func (s *Service) PersistTaskDescriptionUpdate(ctx context.Context, meta Mutatio
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		return mutationValue[domain.Task]{
-			value:  task,
-			status: http.StatusOK,
-			event:  EventDraft{ProjectID: projectID, Type: "task.description.updated", AggregateType: "task", AggregateID: taskID, AggregateVersion: &task.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: map[string]any{"task": task, "descriptionUpdate": true}},
-		}, nil
+		return mutationValue[domain.Task]{value: task, status: http.StatusOK}, nil
 	})
 }
 

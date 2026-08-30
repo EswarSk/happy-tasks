@@ -647,7 +647,7 @@ paths:
     get:
       tags: [Synchronization]
       operationId: collaborateProjectPresence
-      description: WebSocket endpoint for ephemeral project presence and task text selections. These frames are intentionally not durable.
+      description: WebSocket transport for ephemeral task presence and text selections. Sessions are deduplicated by actor in the task UI and are intentionally not durable.
       responses:
         "101":
           description: Switching Protocols to the project collaboration stream.

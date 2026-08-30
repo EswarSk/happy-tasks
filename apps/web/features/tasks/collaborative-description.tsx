@@ -17,6 +17,7 @@ interface DescriptionFrame {
   text?: string;
   initialized?: boolean;
   readOnly?: boolean;
+  readOnlyReason?: "role" | "capacity";
   messageId?: string;
   error?: string;
 }
@@ -70,6 +71,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
   const [value, setValue] = useState(initialValue);
   const [connection, setConnection] = useState<Connection>("connecting");
   const [readOnly, setReadOnly] = useState(false);
+  const [readOnlyReason, setReadOnlyReason] = useState<"role" | "capacity">("capacity");
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState({ canUndo: false, canRedo: false });
   const onValueChangeRef = useRef(onValueChange);
@@ -142,6 +144,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
           } finally { suppressRef.current = false; }
           initializedRef.current = Boolean(frame.initialized);
           setReadOnly(Boolean(frame.readOnly));
+          setReadOnlyReason(frame.readOnlyReason ?? "capacity");
           if (!frame.initialized) sendUpdate(Y.encodeStateAsUpdate(doc), "init");
           else for (const queued of pending.values()) if (current.readyState === WebSocket.OPEN) current.send(queued);
           setReady(Boolean(frame.initialized || frame.readOnly));
@@ -196,7 +199,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
     };
   }, [undoManager]);
 
-  const statusText = readOnly ? "View only — editor limit reached" : { connecting: "Connecting…", saving: "Saving…", synced: "Synced", offline: "Offline — edits stay local" }[connection];
+  const statusText = readOnly ? readOnlyReason === "role" ? "View only — your project role cannot edit" : "View only — editor limit reached" : { connecting: "Connecting…", saving: "Saving…", synced: "Synced", offline: "Offline — edits stay local" }[connection];
   const activeEditors = collaborators.filter((collaborator) => collaborator.taskId === taskId);
   return (
     <div className="mt-3">
@@ -215,7 +218,7 @@ function CollaborativeDescriptionSession({ projectId, taskId, initialValue, coll
         placeholder="Describe the outcome, context, and acceptance criteria…"
         aria-label="Collaborative task description"
       />
-      {readOnly && <p className="mt-2 text-xs text-[var(--text-muted)]" role="status">This task already has 100 active editors. You can follow changes, but editing is temporarily unavailable. Reconnect to request a slot.</p>}
+      {readOnly && <p className="mt-2 text-xs text-[var(--text-muted)]" role="status">{readOnlyReason === "role" ? "Your project role has view-only access to this description." : "This task already has 100 active editors. You can follow changes, but editing is temporarily unavailable. Reconnect to request a slot."}</p>}
       {activeEditors.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-[var(--text-muted)]" aria-live="polite"><span className="inline-flex items-center gap-1"><span className="size-1.5 rounded-full bg-[var(--success)]" />{activeEditors.map((editor) => editor.selectionFrom !== editor.selectionTo ? "A collaborator is selecting text" : "A collaborator is editing").join(" · ")}</span></div>}
       <div className="mt-1.5 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
         <span className={connection === "offline" ? "text-[var(--warning-text)]" : undefined}>{statusText}</span>
