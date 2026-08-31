@@ -2,7 +2,9 @@
 
 A collaboration-first task manager built for the Full Stack Challenge. It demonstrates how a familiar project workspace can stay responsive and consistent when projects grow beyond a few megabytes and several clients edit the same data at once.
 
-**Live deployment:** https://web-atujfotjyq-uc.a.run.app — see [Demo path](#demo-path) for how to sign in and what to look at.
+**Live deployment (frontend + backend, both running):** https://web-atujfotjyq-uc.a.run.app — see [Demo path](#demo-path) for how to sign in and what to look at.
+
+**Local setup:** three commands, Docker only — see [Setup](#setup). No-Docker alternative in [Minimal install](#minimal-install-no-docker).
 
 The implementation is deliberately practical: a Next.js application, a Go modular monolith, and PostgreSQL. REST handles commands and paginated reads; project-scoped Server-Sent Events (SSE) replay compact, durable changes instead of retransmitting an entire project.
 
@@ -33,9 +35,9 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Reversible migrations, deterministic demo/scale seeds, schema verification, CI, container builds, and a k6 scenario.
 - A recorded 10,000-task load-test baseline in [`docs/load-test-results.md`](docs/load-test-results.md).
 
-## Quick start
+## Setup
 
-Prerequisite: Docker with Compose. Ports `3000`, `8080`, `5432`, `6379`, `9000`, `9001`, and `19092` must be available unless overridden in `.env`.
+Prerequisite: Docker with Compose — nothing else to install. Ports `3000`, `8080`, `5432`, `6379`, `9000`, `9001`, and `19092` must be available unless overridden in `.env`.
 
 ```bash
 cp .env.example .env
@@ -73,73 +75,31 @@ The latest local scale baseline is recorded in [`docs/load-test-results.md`](doc
 
 `make db-reset` requires an explicit local-reset guard and never targets an arbitrary database. To remove the retained Compose volume, use `docker compose down --volumes` intentionally.
 
-## Architecture
+## Write-up
+
+The short version of each topic is below. For the full reasoning, diagrams, and decision log, see [`docs/architecture.md`](docs/architecture.md) (design/database docs also in [`docs/database-design.md`](docs/database-design.md) and [`docs/ui-design.md`](docs/ui-design.md); API contract in [`api/openapi.yaml`](api/openapi.yaml)).
 
 ```text
-Next.js 16 + React Query + virtualized list
-       | REST + SSE + collaboration WebSockets
-       v
-Stateless Go API replicas
-       | transactional domain writes   ` attachment bytes
-       v                                 v
-PostgreSQL 17                   MinIO locally / S3 or GCS in production
-       | sync_events outbox
-       v
-     relay --> Redpanda --> Redis ephemeral fan-out
-                              | project events
-                              | presence leases
-                              ` Yjs live updates
+Next.js  --REST + SSE + WebSocket-->  Go API (stateless replicas)  --transaction-->  PostgreSQL
+                                              |                                          |
+                                       attachment bytes                          sync_events outbox
+                                              v                                          v
+                                   MinIO / S3 / GCS                    relay --> Redpanda --> Redis --> other replicas
 ```
 
-PostgreSQL is the system of record because task transitions, membership, dependencies, comments, idempotency, and event publication benefit from relational constraints and multi-row transactions. A competing-safe relay publishes committed `sync_events` to the Kafka-compatible Redpanda log, keyed by project. Redis carries only disposable last-mile delivery and presence leases. A missed broker or Redis notification does not lose task data because SSE clients replay `sync_events` after their last sequence.
+**Architecture decisions** — Next.js frontend, one Go modular monolith, PostgreSQL as the only source of truth. One process (not microservices) because task/comment/dependency rules share transactions — a dependency-cycle check must see the same data as the write creating the edge. The `relay` is the only piece split out, since broker delivery has a different failure mode than request handling. *(details: architecture.md §4)*
 
-MongoDB would make flexible task documents convenient, but unbounded embedded comments and dependency consistency would still require separate collections, indexes, and transactions. Cassandra becomes compelling later for very high-volume, append-heavy comment or activity projections, but it is not a good authority for graph-cycle checks and cross-entity invariants in this two-day scope.
+**How sync works** — Task fields (status, priority, assignees, ...) use field-level optimistic concurrency: edits to different fields never conflict, same-field conflicts return `409` for the UI to resolve. Description text uses Yjs (a CRDT) over its own WebSocket, since character-level concurrent edits don't fit a field-level model. *(§9–10)*
 
-The code is separated by responsibility:
+**Data flow and synchronization strategy** — A mutation commits its domain change and an outbox event in one transaction, then `relay` publishes it to Redpanda, which fans out through Redis to every API replica, which pushes it to clients over SSE/WebSocket. That path is a fast lane, not the source of truth: on reconnect, clients replay missed events from PostgreSQL by cursor; while connected, a 2-second PostgreSQL poll backs it up if the broker is degraded. *(§8–9)*
 
-- `apps/web/features`: product workflows and query-cache reconciliation.
-- `apps/web/components/ui`: reusable design-system primitives.
-- `apps/web/lib/api`: mock and HTTP adapters behind one `WorkspaceApi` contract.
-- `internal/domain`: domain types and validation.
-- `internal/app`: use cases and transactional orchestration.
-- `internal/platform/database`: PostgreSQL implementation.
-- `internal/platform/objectstorage`: attachment storage behind one `Store` interface, backed by S3 (MinIO/AWS) or native GCS.
-- `internal/transport/httpapi`: REST/SSE transport concerns.
-- `db/migrations`, `db/seed`, and `db/checks`: schema lifecycle and verification.
+**How you'd scale it over time** — Now: a few stateless API replicas + one PostgreSQL primary + Redis fan-out. Next: read replicas, connection pooling, a dedicated SSE/WebSocket gateway. Later: partition Redpanda and `sync_events`, shard Redis presence, add derived read models — Redpanda/Redis/relay are already outside the transaction path, so none of this changes correctness, only latency. *(§18)*
 
-The API contract is checked in at [`api/openapi.yaml`](api/openapi.yaml). Deeper decisions live in:
+**Tradeoffs** — PostgreSQL as sole source of truth over full event sourcing (simple, but old events can't reconstruct every past entity version). SSE for durable state + a separate WebSocket only for text, over one bidirectional channel everywhere (simpler to operate, less protocol reuse). CRDT scoped to description text only, not the whole task (keeps the rest of the conflict model simple; no rich cross-field CRDT). *(full table: §19)*
 
-- [`docs/architecture.md`](docs/architecture.md)
-- [`docs/database-design.md`](docs/database-design.md)
-- [`docs/ui-design.md`](docs/ui-design.md)
+**Technology choices and justifications** — PostgreSQL over MongoDB/Cassandra: dependency cycles, membership, and comment threading want relational constraints and transactions. SSE over WebSockets for durable state: traffic is one-way, so the simpler protocol wins; WebSocket is reserved for the one genuinely bidirectional, high-frequency channel (live text). Redpanda (durable log) + Redis (disposable fan-out): never a database-and-broker dual write. Yjs for text: deterministic convergence without app-level merge logic.
 
-## Synchronization model
-
-Every successful mutation performs these steps atomically:
-
-1. Validate membership, input, and domain invariants.
-2. Lock only the records or project dependency graph needed by the operation.
-3. Change domain state.
-4. Allocate the next project sequence and append a compact `sync_events` row.
-5. Commit, then let connected clients wake and read events after their cursor.
-
-The browser patches only affected React Query entries. If it detects a sequence gap, it invalidates the relevant paginated data and catches up from the durable stream. Reconnects send both an explicit cursor and `Last-Event-ID`. Slow or interrupted clients therefore converge without a full-project payload.
-
-Task metadata uses field-level optimistic concurrency and explicit inverse operations. A stale write is accepted only when its changed fields are disjoint from committed operations after the client's version; same-field edits remain understandable business conflicts. Descriptions use Yjs over a task-scoped WebSocket because simultaneous character-level edits benefit from CRDT convergence. Go stores and relays opaque Yjs updates while PostgreSQL retains a snapshot and ordered deltas.
-
-## Data and scale choices
-
-- Tasks and comments are separate rows; a popular task cannot make a single project document grow without bound.
-- Comments use keyset-friendly `(project_id, task_id, created_at, id)` ordering.
-- Task queries use stable cursor pagination and selective indexes.
-- Project IDs lead multi-tenant indexes and foreign keys enforce isolation.
-- Dependency edges use uniqueness, self-edge checks, a project advisory lock, and a recursive reachability check to prevent cycles.
-- Event payloads are capped and contain changed entities rather than project snapshots.
-- The UI virtualizes rows, memoizes item rendering, and incrementally fetches pages.
-
-The next scale steps are connection pooling, read replicas, topic/table partitioning, a dedicated SSE gateway, and Redis Cluster. Redpanda, Redis, the relay, and the Yjs compactor are already outside the domain transaction path, so API autoscaling does not change task correctness.
-
-## Development without the full stack
+## Minimal install (no Docker)
 
 The web application defaults to a deterministic in-memory adapter containing 10,000 tasks:
 
