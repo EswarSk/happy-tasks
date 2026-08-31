@@ -582,7 +582,15 @@ Do not introduce all of this in the take-home. The evolution path is:
 
 ### Stage 1 - read-heavy popular tasks
 
-- Cache the first comment page and reaction summaries in Redis.
+- **Implemented:** cache the first comment page in Redis (`internal/app.CommentCache`,
+  backed by `internal/messaging.Redis`). Keyed per actor rather than per task —
+  a comment's `Reactions[].Reacted` is per-viewer, so a shared cache entry
+  would leak one user's reaction state to another. The author's own entry is
+  invalidated precisely on their own comment creation (read-after-write);
+  other actors' entries rely on a 20s TTL, which is safe because anyone
+  already connected sees new comments via SSE regardless of this cache — it
+  only bounds staleness for a fresh HTTP GET. Reaction summaries are not yet
+  cached.
 - Invalidate or update cache entries from committed events.
 - Send older-page reads to PostgreSQL read replicas when replica lag is
   acceptable.
@@ -681,7 +689,6 @@ Implement only if core work is complete:
 
 Design but do not implement:
 
-- Redis comment-page cache;
 - asynchronous or striped reaction counters;
 - broker fan-out;
 - database partitioning and sharding;

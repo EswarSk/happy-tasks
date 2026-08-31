@@ -52,9 +52,9 @@ The two-day build targets the highest-signal portions of:
 | Event-based backend | Transactional `sync_events` outbox relayed to Redpanda | Dedicated gateway tier |
 | Clear domain model | Explicit Go domain services and database constraints | Extract only when scale requires it |
 | Type-safe API contract | OpenAPI as source of truth; generated Go and TypeScript types | Versioned public API SDKs |
-| Optimistic UI and rollback | Tasks, status changes, and comments | Offline mutation queue |
+| Optimistic UI and rollback | Tasks, status changes, and comments; an IndexedDB-backed offline mutation queue replays in order on reconnect | General conflict-resolution UI beyond version/field merging |
 | Database transactions | Domain mutation, idempotency record, and event written atomically | Distributed workflows via outbox consumers |
-| Caching strategy | Browser query cache, PostgreSQL buffer cache, Redis ephemeral collaboration | Derived read projections |
+| Caching strategy | Browser query cache, PostgreSQL buffer cache, an actor-scoped Redis cache of each task's first comment page (invalidated on the author's own writes, short TTL otherwise) | Cached reaction summaries; read replicas for older pages |
 | Rate limiting/backpressure | Per-instance token buckets, payload limits, bounded queues | Edge/Redis global limits |
 
 The implementation does not call ordinary version-conflict handling a CRDT. CRDTs solve a different problem and are used only for the description field, where automatic concurrent character-level merging is valuable.

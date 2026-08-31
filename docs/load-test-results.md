@@ -1,9 +1,14 @@
 # Load-test results
 
-> These baselines predate the Redpanda outbox relay and Redis cross-instance
-> fan-out introduced on 2026-08-29. They remain useful database/API references,
-> but distributed SSE, presence, and Yjs results must be recorded separately
-> before making a production capacity claim.
+> Only the very first row below (2026-08-28, the original `## Baseline` table)
+> predates the Redpanda outbox relay and Redis cross-instance fan-out
+> introduced on 2026-08-29 — it's kept as a database/API reference point, not a
+> current-architecture claim. Every other result on this page, including the
+> Yjs/WebSocket collaboration stress tests, already runs against that
+> distributed architecture. The 2026-08-30 row re-confirms the read path
+> against the current codebase (SameSite session-cookie fix, the new
+> actor-scoped Redis comment-page cache, and the auto-join showcase projects
+> from this session).
 
 The checked-in scenario at [`scripts/load/tasks.js`](../scripts/load/tasks.js)
 measures authenticated, cursor-backed task-page reads against the seeded
@@ -43,6 +48,7 @@ users membership in the heavy project; the fixture password is `password`.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | 2026-08-29 | 8 | 20 VUs for 30s | 2,760 | 0.00% | 17.29 ms | 30.35 ms | Pass |
 | 2026-08-29 | 8 | 100 VUs for 30s | 14,300 | 76.94% | 5.05 ms | 35.04 ms | Rate-limited |
+| 2026-08-30 | 8 | 20 VUs for 30s | 2,808 | 0.00% | 13.61 ms | 21.1 ms | Pass — 50-item page body 39,807 B |
 
 Commands used:
 

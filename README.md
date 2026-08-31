@@ -25,6 +25,8 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Durable, ordered project event streams with reconnect/replay semantics.
 - Transactional outbox delivery through Redpanda plus Redis cross-instance fan-out, leased presence, and bounded Yjs snapshot compaction.
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
+- An actor-scoped Redis cache of each task's first comment page, invalidated read-after-write on the author's own comments and TTL-bounded otherwise.
+- Installable PWA offline support: task creates/edits/deletes queue in IndexedDB while offline and replay in order on reconnect, with conflicts kept visible rather than silently dropped.
 - Task file attachments for documents and photos up to 25 MB each, stored in S3-compatible object storage (MinIO/AWS S3) or natively in Google Cloud Storage — chosen automatically at startup, see [Object storage](#object-storage) — with authenticated download/delete, SHA-256 metadata, and durable cleanup retries.
 - Installable PWA manifest, service worker shell caching, offline fallback, and connection status messaging.
 - Mock mode for isolated UI development and API mode for the integrated product.
