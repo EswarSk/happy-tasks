@@ -1123,6 +1123,18 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// A reverse proxy in front of this service (e.g. Cloud Run's) can hold the
+	// response until real body bytes exist, even after Flush() — an empty
+	// replay (the common case: client already caught up) previously left the
+	// connection silent until the 15s heartbeat below produced the first real
+	// bytes, so every reconnect with nothing new to replay paid up to a full
+	// heartbeat interval before the client saw anything. Writing an SSE
+	// comment (ignored by clients per spec) immediately guarantees real bytes
+	// leave on connect regardless of replay content or proxy buffering.
+	if _, err := io.WriteString(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
 	notices, unsubscribe := h.hub.Subscribe(projectID)
 	defer unsubscribe()
 
