@@ -54,6 +54,9 @@ type Config struct {
 	Attachments      objectstorage.Store
 	Realtime         *messaging.Redis
 	DocumentProducer *messaging.Producer
+	// RateLimits overrides defaultRatePolicies() by category; nil or a
+	// partial map is fine, see cmd/api/main.go's RATE_LIMIT_* env vars.
+	RateLimits map[string]RatePolicy
 }
 
 type authUserKey struct{}
@@ -63,7 +66,7 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 	for _, origin := range allowedOrigins {
 		originSet[strings.TrimSuffix(origin, "/")] = struct{}{}
 	}
-	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter(), authRequired: config.AuthRequired, secureCookies: config.SecureCookies, attachments: config.Attachments, realtime: config.Realtime, documentProducer: config.DocumentProducer}
+	h := &Handler{service: service, hub: hub, descriptionHub: newDescriptionHub(), presenceHub: newPresenceHub(), defaultActorID: defaultActorID, allowActorOverride: allowActorOverride, allowedOrigins: originSet, logger: logger, rateLimiter: newRateLimiter(config.RateLimits), authRequired: config.AuthRequired, secureCookies: config.SecureCookies, attachments: config.Attachments, realtime: config.Realtime, documentProducer: config.DocumentProducer}
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RealIP)
@@ -1295,7 +1298,7 @@ func requestID(ctx context.Context) string {
 
 func (h *Handler) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.rateLimiter != nil && !h.rateLimiter.allow(rateLimitKey(r), rateLimitCategory(r), time.Now()) {
+		if h.rateLimiter != nil && !h.rateLimiter.allow(rateLimitKey(r, h.allowActorOverride), rateLimitCategory(r), time.Now()) {
 			w.Header().Set("Retry-After", "1")
 			h.writeError(w, r, domain.Validation("RATE_LIMITED", "Too many requests; retry shortly.", nil))
 			return

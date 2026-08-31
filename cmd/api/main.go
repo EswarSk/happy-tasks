@@ -77,6 +77,7 @@ func main() {
 			Attachments:      attachments,
 			Realtime:         realtime,
 			DocumentProducer: documentProducer,
+			RateLimits:       rateLimitOverrides(logger),
 		},
 	)
 	server := &http.Server{
@@ -209,4 +210,31 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
+}
+
+// rateLimitOverrides reads RATE_LIMIT_<CATEGORY>_CAPACITY and
+// RATE_LIMIT_<CATEGORY>_PER_SECOND per category (read, mutation, comment,
+// sse). Both must be set together to override a category — a partial pair is
+// logged and ignored rather than guessed, since the paired default value
+// isn't available outside the httpapi package. Categories with neither var
+// set keep httpapi's built-in default and aren't included here.
+func rateLimitOverrides(logger *slog.Logger) map[string]httpapi.RatePolicy {
+	overrides := map[string]httpapi.RatePolicy{}
+	for _, category := range []string{"read", "mutation", "comment", "sse"} {
+		prefix := "RATE_LIMIT_" + strings.ToUpper(category) + "_"
+		capacityRaw := strings.TrimSpace(os.Getenv(prefix + "CAPACITY"))
+		perSecondRaw := strings.TrimSpace(os.Getenv(prefix + "PER_SECOND"))
+		if capacityRaw == "" && perSecondRaw == "" {
+			continue
+		}
+		capacity, capacityErr := strconv.ParseFloat(capacityRaw, 64)
+		perSecond, perSecondErr := strconv.ParseFloat(perSecondRaw, 64)
+		if capacityErr != nil || perSecondErr != nil {
+			logger.Error("ignoring incomplete or invalid rate limit override", "category", category,
+				prefix+"CAPACITY", capacityRaw, prefix+"PER_SECOND", perSecondRaw)
+			continue
+		}
+		overrides[category] = httpapi.RatePolicy{Capacity: capacity, PerSecond: perSecond}
+	}
+	return overrides
 }
