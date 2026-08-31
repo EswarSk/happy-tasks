@@ -35,17 +35,39 @@ func main() {
 	producer := messaging.NewProducer(messaging.Brokers(required("REDPANDA_BROKERS")))
 	defer producer.Close()
 
-	errorsCh := make(chan error, 3)
-	go func() { errorsCh <- publishOutbox(ctx, db, producer) }()
-	go func() {
-		errorsCh <- messaging.RunDistributor(ctx, messaging.Brokers(required("REDPANDA_BROKERS")), redis, messaging.ProjectEventsTopic)
-	}()
-	go func() {
-		errorsCh <- messaging.RunDistributor(ctx, messaging.Brokers(required("REDPANDA_BROKERS")), redis, messaging.DocumentUpdatesTopic)
-	}()
-	if err := <-errorsCh; err != nil && !errors.Is(err, context.Canceled) {
-		logger.Error("relay stopped", "error", err)
-		os.Exit(1)
+	// Each pipeline is supervised independently: a broker problem confined to one
+	// topic (a missing topic, a rebalance) must not take down the other two. A
+	// shared fatal error channel here previously meant one bad topic crash-looped
+	// outbox publishing and event distribution along with it.
+	go supervise(ctx, logger, "outbox", func() error { return publishOutbox(ctx, db, producer) })
+	go supervise(ctx, logger, "project-events-distributor", func() error {
+		return messaging.RunDistributor(ctx, messaging.Brokers(required("REDPANDA_BROKERS")), redis, messaging.ProjectEventsTopic)
+	})
+	go supervise(ctx, logger, "document-updates-distributor", func() error {
+		return messaging.RunDistributor(ctx, messaging.Brokers(required("REDPANDA_BROKERS")), redis, messaging.DocumentUpdatesTopic)
+	})
+	<-ctx.Done()
+}
+
+// supervise restarts run with capped exponential backoff until ctx is done,
+// so one pipeline's persistent failure degrades to periodic retries instead
+// of exiting the process and taking the other pipelines down with it.
+func supervise(ctx context.Context, logger *slog.Logger, name string, run func() error) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		err := run()
+		if err == nil || errors.Is(err, context.Canceled) {
+			return
+		}
+		logger.Error(name+" stopped, retrying", "error", err, "backoff", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
 	}
 }
 

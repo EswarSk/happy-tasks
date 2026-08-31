@@ -212,9 +212,13 @@ func (h *Handler) descriptionWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if h.documentProducer != nil {
+			// The update is already durably committed above. A publish failure only
+			// means other viewers won't get this edit live over the fan-out path (they
+			// still converge on reconnect via GetTaskDescriptionDocument) — it must not
+			// cost the author their own connection and force a reconnect on every
+			// keystroke whenever the broker is degraded.
 			if err := h.documentProducer.PublishDocumentUpdate(r.Context(), messaging.DocumentUpdate{ProjectID: projectID, TaskID: taskID, MessageID: messageID, ActorID: actorID, Update: frame.Update, Text: frame.Text}); err != nil {
-				_ = client.sendJSON(descriptionFrame{Type: "error", MessageID: messageID, Error: "DESCRIPTION_DELIVERY_FAILED"})
-				return
+				h.logger.Error("publish document update", "error", err, "projectId", projectID, "taskId", taskID)
 			}
 		}
 		_ = client.sendJSON(descriptionFrame{Type: "ack", MessageID: messageID, Version: result.Value.Version})
