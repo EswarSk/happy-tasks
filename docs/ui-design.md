@@ -65,6 +65,9 @@ Official references:
 ## 3. Information architecture
 
 ```text
+/login
+  Sign in / create account
+
 /projects
   Project index and create-project action
 
@@ -73,6 +76,12 @@ Official references:
 
 /projects/:projectId/tasks/:taskId
   Same workspace with a deep-linkable task detail panel
+
+/projects/:projectId/tasks/:taskId/agentic
+  Read-only view of an AI agent run attached to the task (not in the original
+  proposal): orchestrator status, its node graph, and its event timeline,
+  backed by the agent_runs/agent_run_nodes/agent_run_edges/agent_run_events
+  tables.
 
 /projects/:projectId/activity
   Optional full activity view; recent activity also appears in a workspace tab
@@ -173,7 +182,7 @@ Sections:
 
 1. Header: editable title, task ID copy action, overflow menu, close action.
 2. Properties: status, priority, assignees, tags, and custom fields.
-3. Description: plain textarea for the initial build.
+3. Description: shipped as a Yjs CRDT-backed collaborative editor rather than the plain textarea originally proposed here — concurrent character-level edits converge instead of last-write-wins.
 4. Dependencies: depends-on and blocking lists with searchable add control.
 5. Tabs: comments and recent activity.
 

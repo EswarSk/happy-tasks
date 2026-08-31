@@ -148,11 +148,14 @@ CREATE TABLE project_members (
 );
 ```
 
-The take-home uses seeded users and a development identity selector. Production
-identity is resolved from a verified provider/subject in `user_identities`; the
-API never treats an arbitrary actor header as proof of identity. The default
-local API uses `DEFAULT_ACTOR_ID`; `ALLOW_DEMO_ACTOR_OVERRIDE=true` is an
-explicit test-only escape hatch.
+What shipped: email/password registration and login, bcrypt password hashes on
+`users.password_hash`, and a random session token whose SHA-256 digest is
+persisted in `auth_sessions` (migration 00018) — the API never treats an
+arbitrary actor header as proof of identity. `user_identities` (below) was
+drafted for a future external provider/SSO integration but nothing in the
+codebase reads or writes it yet; local dev's `DEFAULT_ACTOR_ID` fallback and
+`ALLOW_DEMO_ACTOR_OVERRIDE=true` escape hatch remain development-only, gated
+off by default.
 
 Migration 00011 adds the lifecycle boundary:
 

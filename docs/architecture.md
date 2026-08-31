@@ -246,7 +246,10 @@ starter project.
 `project_members` roles. Every project belongs to one organization, and all
 project reads, project creation, and membership invitations require an active
 organization membership. `task_attachments` stores file metadata and a
-SHA-256 checksum while the binary lives in MinIO locally and S3 in production.
+SHA-256 checksum while the binary lives in MinIO locally, and in a deployment
+lives in either S3 or Google Cloud Storage depending on which credentials are
+configured (`internal/platform/objectstorage.Open` picks the backend; see the
+root README's Object storage section).
 Each upload records a delayed cleanup intent before writing the object and
 cancels it inside the attachment metadata transaction. Attachment and task
 deletes enqueue object removal through a database trigger. API replicas lease

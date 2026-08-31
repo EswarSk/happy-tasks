@@ -2,6 +2,8 @@
 
 A collaboration-first task manager built for the Full Stack Challenge. It demonstrates how a familiar project workspace can stay responsive and consistent when projects grow beyond a few megabytes and several clients edit the same data at once.
 
+**Live deployment:** https://web-atujfotjyq-uc.a.run.app — see [Demo path](#demo-path) for how to sign in and what to look at.
+
 The implementation is deliberately practical: a Next.js application, a Go modular monolith, and PostgreSQL. REST handles commands and paginated reads; project-scoped Server-Sent Events (SSE) replay compact, durable changes instead of retransmitting an entire project.
 
 ## What is included
@@ -23,7 +25,7 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 - Durable, ordered project event streams with reconnect/replay semantics.
 - Transactional outbox delivery through Redpanda plus Redis cross-instance fan-out, leased presence, and bounded Yjs snapshot compaction.
 - A virtualized task list and cursor-paginated API suitable for 10,000+ tasks.
-- Task file attachments for documents and photos up to 25 MB each, stored in S3-compatible object storage with authenticated download/delete, SHA-256 metadata, and durable cleanup retries.
+- Task file attachments for documents and photos up to 25 MB each, stored in S3-compatible object storage (MinIO/AWS S3) or natively in Google Cloud Storage — chosen automatically at startup, see [Object storage](#object-storage) — with authenticated download/delete, SHA-256 metadata, and durable cleanup retries.
 - Installable PWA manifest, service worker shell caching, offline fallback, and connection status messaging.
 - Mock mode for isolated UI development and API mode for the integrated product.
 - Reversible migrations, deterministic demo/scale seeds, schema verification, CI, container builds, and a k6 scenario.
@@ -78,7 +80,7 @@ Next.js 16 + React Query + virtualized list
 Stateless Go API replicas
        | transactional domain writes   ` attachment bytes
        v                                 v
-PostgreSQL 17                   MinIO locally / S3 in production
+PostgreSQL 17                   MinIO locally / S3 or GCS in production
        | sync_events outbox
        v
      relay --> Redpanda --> Redis ephemeral fan-out
@@ -99,7 +101,7 @@ The code is separated by responsibility:
 - `internal/domain`: domain types and validation.
 - `internal/app`: use cases and transactional orchestration.
 - `internal/platform/database`: PostgreSQL implementation.
-- `internal/platform/objectstorage`: shared MinIO/S3 attachment storage.
+- `internal/platform/objectstorage`: attachment storage behind one `Store` interface, backed by S3 (MinIO/AWS) or native GCS.
 - `internal/transport/httpapi`: REST/SSE transport concerns.
 - `db/migrations`, `db/seed`, and `db/checks`: schema lifecycle and verification.
 
@@ -153,7 +155,51 @@ cd apps/web
 NEXT_PUBLIC_DATA_SOURCE=api NEXT_PUBLIC_API_BASE_URL=http://localhost:8080 npm run dev
 ```
 
-Authentication is enabled by default in Compose; set `AUTH_REQUIRED=false` only for a deliberately unauthenticated local demo. New accounts receive a private starter project. After loading the demo seed, sign in as `maya@example.test` with password `password` (the credential is for local fixtures only). Compose uses MinIO through `S3_ENDPOINT`; production omits that endpoint and uses AWS S3 with the normal IAM credential chain. A project's aggregate data can exceed 2 MB because tasks remain paginated and file bytes are stored separately; task files support common documents and images up to 25 MB each, while the API still rejects a single oversized JSON mutation.
+Authentication is enabled by default in Compose; set `AUTH_REQUIRED=false` only for a deliberately unauthenticated local demo. New accounts receive a private starter project, and — if the demo/scenario seeds have been loaded — automatic membership in the shared demo projects too; see [Demo path](#demo-path). Signing in as `maya@example.test` with password `password` after loading the demo seed also still works (the credential is for local fixtures only). A project's aggregate data can exceed 2 MB because tasks remain paginated and file bytes are stored separately; task files support common documents and images up to 25 MB each, while the API still rejects a single oversized JSON mutation.
+
+## Object storage
+
+`internal/platform/objectstorage.Open` picks the attachment backend automatically:
+`AWS_ACCESS_KEY_ID` set → S3 (MinIO locally via `S3_ENDPOINT`, real AWS S3 in a
+deployment that has AWS credentials); unset → Google Cloud Storage over its native
+API using Application Default Credentials, no keys involved. Both implementations
+satisfy the same `Store` interface (`Put`/`Get`/`Delete`), so the rest of the app
+never branches on which one is active. The live deployment uses the GCS path: the
+`api` Cloud Run service runs under its own service account with bucket-scoped
+`roles/storage.admin`, so there is no S3 credential material anywhere in that
+environment.
+
+## Deployment
+
+`deploy/cloudrun/deploy.sh` deploys the whole stack to Google Cloud Run:
+
+- `api` and `web` as autoscaled Cloud Run **Services** (scale-to-zero by default).
+- `relay` and `description-compactor` as Cloud Run **Worker Pools** — background,
+  non-HTTP, pull-based consumers; worker pools run a fixed instance count rather
+  than autoscaling on their own (a real Cloud Run limitation), see the script's
+  comments for the Kafka Autoscaler add-on if that's needed later.
+- `migrate` as a Cloud Run **Job**, run once per deploy.
+- A self-run Cloud SQL for PostgreSQL instance and a Cloud Storage bucket, both
+  provisioned by the script (not a managed BaaS) and reached through a dedicated
+  runtime service account — no long-lived credentials in Secret Manager beyond the
+  database URL and the backing Redis/Kafka credentials.
+
+Redis and the Kafka-compatible broker are expected to already exist as managed
+services (Upstash Redis, Redpanda Serverless, or self-hosted equivalents) — the
+script does not provision those.
+
+```bash
+cp deploy/cloudrun/env.example deploy/cloudrun/env
+$EDITOR deploy/cloudrun/env   # GCP project/region, Cloud SQL password, REDIS_URL, REDPANDA_BROKERS, ...
+set -a; . deploy/cloudrun/env; set +a
+./deploy/cloudrun/deploy.sh
+```
+
+Requires `gcloud` (authenticated, billing enabled on the target project) and
+Docker. Full prerequisites, defaults, and a couple of environment-specific
+gotchas (Cloud SQL edition, `linux/amd64` builds on Apple Silicon, the gRPC
+Python dependency some `gcloud` installs are missing) are documented as comments
+at the top of the script and inline where they apply.
 
 ## Verification
 
@@ -176,6 +222,27 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 
 ## Demo path
 
+Live deployment: **https://web-atujfotjyq-uc.a.run.app**
+
+There's no shared demo login — sign up with your own account like any real user
+would (`Create account`, any email/password). Registration always creates two
+kinds of access in one step:
+
+- A **private starter workspace** (`"<your name>'s workspace"`), empty, owned
+  solely by you.
+- Automatic membership in four **shared demo projects** — **Realtime Launch**,
+  **Mobile Experience**, **Scale & Scenario Lab** (10,000 tasks), and **Empty
+  Sandbox** — every account gets added to the same four, so any two reviewers
+  signed up separately land in the same shared space and can collaborate on it
+  live. Each one's description is prefixed `[Shared demo project — every new
+  account joins this one automatically]` in the UI so it's never ambiguous
+  which project is yours alone versus shared.
+
+Steps 1–9 below use **Realtime Launch** unless noted. "Two participants" means
+two accounts signed in at once (two browser profiles, or one normal + one
+incognito window) — sign up twice with different emails, both land in the same
+shared projects automatically.
+
 1. Open two browser windows on the same project.
 2. Create and edit a task in one window; observe the compact SSE update in the other.
 3. Add a comment and show the remote comment count/feed update.
@@ -183,8 +250,13 @@ Set `TEST_DATABASE_URL` to include the PostgreSQL integration test. Set `TEST_AP
 5. Change status and priority from two stale browser views to show field-level merging, then use the detail-header undo/redo controls.
 6. Open the same task in two browser windows and edit its description concurrently to observe Yjs convergence.
 7. Submit a stale same-field version to show the `409` conflict response.
-8. Mention `@maya` or `@noah` in a comment and open the notification bell.
-9. Switch to the seeded scale project to demonstrate cursor loading and virtualization.
+8. Mention the other account's `@handle` in a comment and open the notification bell.
+9. Switch to **Scale & Scenario Lab** to demonstrate cursor loading and virtualization.
+10. With two accounts on the same task, check the presence strip and each other's live selection.
+11. Open the activity feed to see the running log of what steps 2–9 just did.
+12. Drag a task between columns on the Kanban board to trigger a status transition.
+13. Attach a file to a task and download it back.
+14. In **Scale & Scenario Lab**, open the task with 2,500 comments to see paginated comment loading; switch to **Empty Sandbox** for the empty-state UI.
 
 ## Deliberate boundaries
 
