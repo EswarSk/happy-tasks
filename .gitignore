@@ -10,3 +10,4 @@ coverage/
 *.log
 tmp/
 /workers/**/node_modules/
+/docs/video-script.md
