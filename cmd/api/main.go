@@ -58,10 +58,12 @@ func main() {
 		defer documentProducer.Close()
 	}
 	var notifier app.Notifier = hub
+	var commentCache app.CommentCache
 	if realtime != nil {
 		notifier = nil
+		commentCache = realtime
 	}
-	service := app.NewService(db, notifier)
+	service := app.NewService(db, notifier, commentCache)
 	handler := httpapi.New(
 		service,
 		hub,

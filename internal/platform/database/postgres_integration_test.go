@@ -34,7 +34,7 @@ func TestTransactionalFlows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := app.NewService(db, syncstream.NewHub())
+	service := app.NewService(db, syncstream.NewHub(), nil)
 	projects, err := service.ListProjects(ctx, testActor, 50)
 	if err != nil {
 		t.Fatalf("list projects: %v", err)
@@ -201,6 +201,100 @@ func TestTransactionalFlows(t *testing.T) {
 	crossTaskReplyID := uuid.Must(uuid.NewV7()).String()
 	_, err = service.CreateComment(ctx, testMeta("cross-task-reply:"+crossTaskReplyID), testProject, taskB, app.CreateCommentInput{ID: crossTaskReplyID, ParentID: &commentID, Body: "Invalid cross-task reply"})
 	assertDomainCode(t, err, "COMMENT_PARENT_NOT_FOUND")
+}
+
+// fakeCommentCache is an in-memory app.CommentCache used to prove the read-
+// through and invalidation behavior without needing a real Redis instance:
+// tampering with an entry directly and observing it get served proves reads
+// are actually coming from the cache, not silently recomputed.
+type fakeCommentCache struct {
+	entries map[string]domain.Page[domain.Comment]
+}
+
+func newFakeCommentCache() *fakeCommentCache {
+	return &fakeCommentCache{entries: map[string]domain.Page[domain.Comment]{}}
+}
+
+func fakeCommentCacheKey(projectID, taskID, actorID string) string {
+	return projectID + ":" + taskID + ":" + actorID
+}
+
+func (f *fakeCommentCache) GetCommentPage(_ context.Context, projectID, taskID, actorID string) (domain.Page[domain.Comment], bool) {
+	page, ok := f.entries[fakeCommentCacheKey(projectID, taskID, actorID)]
+	return page, ok
+}
+
+func (f *fakeCommentCache) SetCommentPage(_ context.Context, projectID, taskID, actorID string, page domain.Page[domain.Comment]) {
+	f.entries[fakeCommentCacheKey(projectID, taskID, actorID)] = page
+}
+
+func (f *fakeCommentCache) InvalidateCommentPage(_ context.Context, projectID, taskID, actorID string) {
+	delete(f.entries, fakeCommentCacheKey(projectID, taskID, actorID))
+}
+
+func TestCommentCacheReadThroughAndInvalidation(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	db, err := Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cache := newFakeCommentCache()
+	service := app.NewService(db, syncstream.NewHub(), cache)
+
+	taskID := uuid.Must(uuid.NewV7()).String()
+	if _, err := service.CreateTask(ctx, testMeta("cache-task:"+taskID), testProject, app.CreateTaskInput{
+		ID: taskID, Title: "Comment cache test task", Status: domain.StatusTodo, Priority: domain.PriorityMedium,
+	}); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	commentID := uuid.Must(uuid.NewV7()).String()
+	if _, err := service.CreateComment(ctx, testMeta("cache-comment:"+commentID), testProject, taskID, app.CreateCommentInput{ID: commentID, Body: "Original body"}); err != nil {
+		t.Fatalf("create comment: %v", err)
+	}
+
+	first, err := service.ListComments(ctx, testActor, testProject, taskID, app.CommentFilter{})
+	if err != nil {
+		t.Fatalf("list comments: %v", err)
+	}
+	if len(first.Items) != 1 || first.Items[0].Body != "Original body" {
+		t.Fatalf("unexpected first page: %#v", first.Items)
+	}
+	if _, cached := cache.GetCommentPage(ctx, testProject, taskID, testActor); !cached {
+		t.Fatal("first default-page-size list did not populate the cache")
+	}
+
+	poisoned := domain.Page[domain.Comment]{Items: []domain.Comment{{ID: "poisoned", Body: "Poisoned cache entry"}}}
+	cache.SetCommentPage(ctx, testProject, taskID, testActor, poisoned)
+	served, err := service.ListComments(ctx, testActor, testProject, taskID, app.CommentFilter{})
+	if err != nil {
+		t.Fatalf("list comments (poisoned): %v", err)
+	}
+	if len(served.Items) != 1 || served.Items[0].ID != "poisoned" {
+		t.Fatalf("expected the poisoned cache entry to be served, got: %#v", served.Items)
+	}
+
+	// Creating a new comment as the same actor must invalidate their own
+	// cached page so they immediately see their own new comment.
+	secondCommentID := uuid.Must(uuid.NewV7()).String()
+	if _, err := service.CreateComment(ctx, testMeta("cache-comment-2:"+secondCommentID), testProject, taskID, app.CreateCommentInput{ID: secondCommentID, Body: "Second body"}); err != nil {
+		t.Fatalf("create second comment: %v", err)
+	}
+	if _, cached := cache.GetCommentPage(ctx, testProject, taskID, testActor); cached {
+		t.Fatal("creating a comment did not invalidate the author's cached page")
+	}
+	refreshed, err := service.ListComments(ctx, testActor, testProject, taskID, app.CommentFilter{})
+	if err != nil {
+		t.Fatalf("list comments (refreshed): %v", err)
+	}
+	if len(refreshed.Items) != 2 {
+		t.Fatalf("expected the fresh page to reflect both real comments, got: %#v", refreshed.Items)
+	}
 }
 
 func testMeta(key string) app.MutationMeta {

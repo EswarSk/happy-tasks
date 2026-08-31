@@ -238,3 +238,21 @@ type Database interface {
 type Notifier interface {
 	Publish(projectID string)
 }
+
+// CommentCache caches a task's first comment page (no cursor, default page
+// size) — Stage 1 of docs/database-design.md's hot-task scaling path, kept
+// deliberately out of the two-day build boundary until now. Entries are keyed
+// per actor, not just per task: a Comment's Reactions carry a per-viewer
+// Reacted flag, so sharing one cached page across different actors would leak
+// one user's reaction state to another. A nil cache is always a miss, so
+// caching is purely additive and never required for correctness.
+type CommentCache interface {
+	GetCommentPage(ctx context.Context, projectID, taskID, actorID string) (domain.Page[domain.Comment], bool)
+	SetCommentPage(ctx context.Context, projectID, taskID, actorID string, page domain.Page[domain.Comment])
+	// InvalidateCommentPage clears only the given actor's cached entry (used
+	// right after that actor's own comment is created, for read-after-write).
+	// Other actors' entries are left to their TTL — anyone already connected
+	// gets the new comment immediately via the SSE comment.created event
+	// regardless, so this only bounds staleness for a fresh HTTP GET.
+	InvalidateCommentPage(ctx context.Context, projectID, taskID, actorID string)
+}

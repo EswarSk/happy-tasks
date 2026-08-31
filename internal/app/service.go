@@ -23,10 +23,14 @@ import (
 type Service struct {
 	db       Database
 	notifier Notifier
+	cache    CommentCache
 }
 
-func NewService(db Database, notifier Notifier) *Service {
-	return &Service{db: db, notifier: notifier}
+// NewService builds the application service. cache may be nil (e.g. Redis
+// not configured), in which case comment reads always fall through to the
+// database — caching is an optimization, never a correctness dependency.
+func NewService(db Database, notifier Notifier, cache CommentCache) *Service {
+	return &Service{db: db, notifier: notifier, cache: cache}
 }
 
 const sessionLifetime = 30 * 24 * time.Hour
@@ -868,6 +872,14 @@ func (s *Service) ListComments(ctx context.Context, actorID, projectID, taskID s
 	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
 		return domain.Page[domain.Comment]{}, err
 	}
+	// Only the true first page (no cursor, default size) is cacheable — a
+	// custom page size would otherwise collide with the default-size entry.
+	cacheable := s.cache != nil && filter.Cursor == nil && filter.PageSize < 1
+	if cacheable {
+		if page, ok := s.cache.GetCommentPage(ctx, projectID, taskID, actorID); ok {
+			return page, nil
+		}
+	}
 	filter.PageSize = normalizePageSize(filter.PageSize)
 	requested := filter.PageSize
 	filter.PageSize++
@@ -880,6 +892,9 @@ func (s *Service) ListComments(ctx context.Context, actorID, projectID, taskID s
 		page.Items = items[:requested]
 		last := page.Items[len(page.Items)-1]
 		page.NextCursor = EncodeCommentCursor(last.CreatedAt, last.ID)
+	}
+	if cacheable {
+		s.cache.SetCommentPage(ctx, projectID, taskID, actorID, page)
 	}
 	return page, nil
 }
@@ -934,7 +949,7 @@ func (s *Service) CreateComment(ctx context.Context, meta MutationMeta, projectI
 	if input.ParentID != nil && *input.ParentID == input.ID {
 		return Mutation[domain.Comment]{}, domain.Validation("COMMENT_PARENT_INVALID", "A comment cannot reply to itself.", map[string]any{"field": "parentId"})
 	}
-	return runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Comment], error) {
+	result, err := runMutation(ctx, s, meta, func(store Store) (mutationValue[domain.Comment], error) {
 		if err := requireMember(ctx, store, projectID, meta.ActorID); err != nil {
 			return mutationValue[domain.Comment]{}, err
 		}
@@ -961,6 +976,12 @@ func (s *Service) CreateComment(ctx context.Context, meta MutationMeta, projectI
 		}
 		return mutationValue[domain.Comment]{value: comment, status: http.StatusCreated, event: EventDraft{ProjectID: projectID, Type: "comment.created", AggregateType: "comment", AggregateID: comment.ID, AggregateVersion: &comment.Version, ActorID: meta.ActorID, RequestID: meta.RequestID, Payload: payload}}, nil
 	})
+	// Read-after-write for the author's own cached first page. Other actors'
+	// cached entries are left to their TTL; see CommentCache's doc comment.
+	if err == nil && !result.Replayed && s.cache != nil {
+		s.cache.InvalidateCommentPage(ctx, projectID, taskID, meta.ActorID)
+	}
+	return result, err
 }
 
 func (s *Service) ListNotifications(ctx context.Context, actorID, projectID string, unreadOnly bool, cursor *NotificationCursor, pageSize int) (domain.Page[domain.Notification], error) {

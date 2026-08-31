@@ -246,6 +246,40 @@ func (r *Redis) ListPresence(ctx context.Context, projectID string) ([]Presence,
 	return items, nil
 }
 
+// commentCacheTTL is deliberately short: it only bounds staleness for a fresh
+// HTTP GET from an actor other than the comment's author (who gets an
+// immediate, precise invalidation instead — see app.CommentCache). Anyone
+// already connected sees new comments via SSE regardless of this cache.
+const commentCacheTTL = 20 * time.Second
+
+func commentCacheKey(projectID, taskID, actorID string) string {
+	return "happy-tasks:comments:first-page:" + projectID + ":" + taskID + ":" + actorID
+}
+
+func (r *Redis) GetCommentPage(ctx context.Context, projectID, taskID, actorID string) (domain.Page[domain.Comment], bool) {
+	raw, err := r.client.Get(ctx, commentCacheKey(projectID, taskID, actorID)).Bytes()
+	if err != nil {
+		return domain.Page[domain.Comment]{}, false
+	}
+	var page domain.Page[domain.Comment]
+	if json.Unmarshal(raw, &page) != nil {
+		return domain.Page[domain.Comment]{}, false
+	}
+	return page, true
+}
+
+func (r *Redis) SetCommentPage(ctx context.Context, projectID, taskID, actorID string, page domain.Page[domain.Comment]) {
+	payload, err := json.Marshal(page)
+	if err != nil {
+		return
+	}
+	_ = r.client.SetEx(ctx, commentCacheKey(projectID, taskID, actorID), payload, commentCacheTTL).Err()
+}
+
+func (r *Redis) InvalidateCommentPage(ctx context.Context, projectID, taskID, actorID string) {
+	_ = r.client.Del(ctx, commentCacheKey(projectID, taskID, actorID)).Err()
+}
+
 func presenceKeys(projectID string) (string, string) {
 	prefix := "happy-tasks:presence:" + projectID
 	return prefix + ":data", prefix + ":expiry"
