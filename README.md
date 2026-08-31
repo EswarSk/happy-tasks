@@ -39,6 +39,15 @@ The implementation is deliberately practical: a Next.js application, a Go modula
 
 Prerequisite: Docker with Compose — nothing else to install. Ports `3000`, `8080`, `5432`, `6379`, `9000`, `9001`, and `19092` must be available unless overridden in `.env`.
 
+Fastest path for a reviewer — one script, no manual `.env` setup:
+
+```bash
+./scripts/run-with-demo.sh      # seeded demo data (Realtime Launch project, sample users/tasks)
+./scripts/run-without-demo.sh   # empty database — sign up for a fresh account instead
+```
+
+Each builds and starts the full stack and prints the login to use once it's ready. Equivalent by hand:
+
 ```bash
 cp .env.example .env
 make seed-demo
