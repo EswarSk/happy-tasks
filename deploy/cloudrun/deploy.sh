@@ -14,6 +14,11 @@
 #   ./deploy/cloudrun/deploy.sh
 #
 # Requires: gcloud (authenticated, billing enabled on GCP_PROJECT), docker.
+# If `gcloud run worker-pools` fails with "No module named 'grpc'" (seen with the
+# Homebrew gcloud-cli cask, which runs on your system Python rather than its own
+# bundled one): pip install grpcio grpcio-status into that interpreter (find it via
+# `gcloud info | grep Location`), --user --break-system-packages if it's
+# externally-managed, then export CLOUDSDK_PYTHON_SITEPACKAGES=1 before rerunning.
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -51,9 +56,11 @@ gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
 # Unix-socket connector every Postgres-touching Cloud Run resource below mounts
 # via --*-cloudsql-instances. ZONAL keeps this cheap; switch to
 # --availability-type=REGIONAL for real failover once this isn't just a demo.
+# --edition=enterprise is required for shared-core tiers like db-g1-small; some
+# projects default new instances to enterprise-plus, which rejects them.
 if ! gcloud sql instances describe "$CLOUDSQL_INSTANCE" >/dev/null 2>&1; then
   gcloud sql instances create "$CLOUDSQL_INSTANCE" \
-    --database-version=POSTGRES_17 --tier="$CLOUDSQL_TIER" --region="$GCP_REGION" \
+    --database-version=POSTGRES_17 --edition=enterprise --tier="$CLOUDSQL_TIER" --region="$GCP_REGION" \
     --storage-auto-increase --availability-type=ZONAL
 fi
 gcloud sql databases describe "$CLOUDSQL_DB_NAME" --instance="$CLOUDSQL_INSTANCE" >/dev/null 2>&1 \
@@ -76,22 +83,38 @@ put_secret database-url "$DATABASE_URL"
 put_secret redis-url "$REDIS_URL"
 put_secret kafka-sasl-password "$KAFKA_SASL_PASSWORD"
 
-# --- attachments bucket: Cloud Storage, accessed natively via Application Default
-# Credentials (internal/platform/objectstorage.Open routes to the GCS backend
-# whenever AWS_ACCESS_KEY_ID isn't set). The api service runs as its own dedicated
-# service account so no key material is ever generated, stored, or rotated — just
-# an IAM grant on the bucket.
-api_sa="happy-task-api@$GCP_PROJECT.iam.gserviceaccount.com"
-gcloud iam service-accounts describe "$api_sa" >/dev/null 2>&1 \
-  || gcloud iam service-accounts create happy-task-api --display-name="Happy Task Management api runtime identity"
+# --- runtime identity: one dedicated service account for every Cloud Run resource
+# below (api, migrate, relay, description-compactor) instead of the broad default
+# compute service account. Needs: Secret Manager access (DATABASE_URL etc.),
+# Cloud SQL Auth Proxy access (--*-cloudsql-instances relies on this at runtime,
+# not just at deploy time), and — only really used by api — bucket access, since
+# internal/platform/objectstorage.Open talks to GCS natively via this identity
+# (no key material) whenever AWS_ACCESS_KEY_ID isn't set.
+runtime_sa="happy-task-api@$GCP_PROJECT.iam.gserviceaccount.com"
+gcloud iam service-accounts describe "$runtime_sa" >/dev/null 2>&1 \
+  || gcloud iam service-accounts create happy-task-api --display-name="Happy Task Management runtime identity"
 gcloud storage buckets describe "gs://$S3_BUCKET" >/dev/null 2>&1 \
   || gcloud storage buckets create "gs://$S3_BUCKET" --location="$GCP_REGION" --uniform-bucket-level-access
+
+# A freshly created service account can take a few seconds to become visible to
+# other APIs (IAM propagation delay); retry the first grant instead of failing on it.
+attempt=0
+until gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --member="serviceAccount:$runtime_sa" --role=roles/cloudsql.client --condition=None >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 10 ] || { echo "timed out waiting for $runtime_sa to propagate" >&2; exit 1; }
+  sleep 3
+done
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --member="serviceAccount:$runtime_sa" --role=roles/secretmanager.secretAccessor --condition=None >/dev/null
 gcloud storage buckets add-iam-policy-binding "gs://$S3_BUCKET" \
-  --member="serviceAccount:$api_sa" --role=roles/storage.objectAdmin >/dev/null
+  --member="serviceAccount:$runtime_sa" --role=roles/storage.admin >/dev/null
 
 build_push() {
   name=$1; dockerfile=$2; context=$3; shift 3
-  docker build -f "$dockerfile" -t "$registry/$name:$TAG" "$@" "$context"
+  # Cloud Run only runs linux/amd64; force it regardless of the host's arch
+  # (Docker Desktop on Apple Silicon builds arm64 by default).
+  docker build --platform=linux/amd64 -f "$dockerfile" -t "$registry/$name:$TAG" "$@" "$context"
   docker push "$registry/$name:$TAG"
 }
 
@@ -103,6 +126,7 @@ build_push description-compactor deploy/description-compactor.Dockerfile .
 # --- migrate: run once, wait for completion ---
 gcloud run jobs deploy migrate \
   --image="$registry/migrate:$TAG" --region="$GCP_REGION" \
+  --service-account="$runtime_sa" \
   --command=/bin/sh --args='-c,exec goose -dir=/migrations postgres "$DATABASE_URL" up' \
   --set-secrets=DATABASE_URL=database-url:latest \
   --set-cloudsql-instances="$cloudsql_connection" --max-retries=0
@@ -111,11 +135,11 @@ gcloud run jobs execute migrate --region="$GCP_REGION" --wait
 # --- api: autoscaled Service ---
 gcloud run deploy api \
   --image="$registry/api:$TAG" --region="$GCP_REGION" \
-  --service-account="$api_sa" \
+  --service-account="$runtime_sa" \
   --allow-unauthenticated --port=8080 --cpu=1 --memory=512Mi --concurrency=80 \
   --min-instances="$API_MIN_INSTANCES" --max-instances="${API_MAX_INSTANCES:-20}" \
   --add-cloudsql-instances="$cloudsql_connection" \
-  --set-env-vars="^##^HTTP_ADDR=:8080##PORT=8080##AUTH_REQUIRED=true##AUTH_COOKIE_SECURE=true##LOG_LEVEL=info##S3_BUCKET=$S3_BUCKET##S3_CREATE_BUCKET=false##REDPANDA_BROKERS=$REDPANDA_BROKERS##KAFKA_SASL_USERNAME=$KAFKA_SASL_USERNAME##CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}" \
+  --set-env-vars="^##^AUTH_REQUIRED=true##AUTH_COOKIE_SECURE=true##LOG_LEVEL=info##S3_BUCKET=$S3_BUCKET##S3_CREATE_BUCKET=false##REDPANDA_BROKERS=$REDPANDA_BROKERS##KAFKA_SASL_USERNAME=$KAFKA_SASL_USERNAME##CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}" \
   --set-secrets="DATABASE_URL=database-url:latest,REDIS_URL=redis-url:latest,KAFKA_SASL_PASSWORD=kafka-sasl-password:latest"
 api_url=$(gcloud run services describe api --region="$GCP_REGION" --format='value(status.url)')
 
@@ -141,14 +165,16 @@ gcloud run services update api --region="$GCP_REGION" \
 # autoscaling needs the separate Kafka Autoscaler add-on watching consumer lag; see
 # https://docs.cloud.google.com/run/docs/configuring/workerpools/kafka-autoscaler
 gcloud run worker-pools deploy relay \
-  --image="$registry/relay:$TAG" --region="$GCP_REGION" --cpu=1 --memory=256Mi \
+  --image="$registry/relay:$TAG" --region="$GCP_REGION" --cpu=1 --memory=512Mi \
+  --service-account="$runtime_sa" \
   --instances="${RELAY_INSTANCES:-2}" \
   --set-cloudsql-instances="$cloudsql_connection" \
   --set-env-vars="^##^REDPANDA_BROKERS=$REDPANDA_BROKERS##KAFKA_SASL_USERNAME=$KAFKA_SASL_USERNAME" \
   --set-secrets="DATABASE_URL=database-url:latest,REDIS_URL=redis-url:latest,KAFKA_SASL_PASSWORD=kafka-sasl-password:latest"
 
 gcloud run worker-pools deploy description-compactor \
-  --image="$registry/description-compactor:$TAG" --region="$GCP_REGION" --cpu=1 --memory=256Mi \
+  --image="$registry/description-compactor:$TAG" --region="$GCP_REGION" --cpu=1 --memory=512Mi \
+  --service-account="$runtime_sa" \
   --instances="${COMPACTOR_INSTANCES:-1}" \
   --set-cloudsql-instances="$cloudsql_connection" \
   --set-env-vars="^##^COMPACTION_THRESHOLD=500##COMPACTION_INTERVAL_MS=5000" \
