@@ -32,7 +32,14 @@ func newRateLimiter() *rateLimiter {
 			"read":     {capacity: 300, perSecond: 100},
 			"mutation": {capacity: 30, perSecond: 2},
 			"comment":  {capacity: 20, perSecond: 1},
-			"sse":      {capacity: 4, perSecond: 0.05},
+			// The frontend's SSE client backs off up to 10s between reconnect
+			// attempts (features/realtime/use-project-events.ts); refill must
+			// stay faster than that floor or a client that's actually behaving
+			// correctly can never catch back up once the bucket empties. This
+			// also has to absorb every open tab/project reconnecting at once
+			// after a real disruption (e.g. an API restart), since the bucket
+			// is shared per source IP, not per connection.
+			"sse": {capacity: 20, perSecond: 1},
 		},
 	}
 }
