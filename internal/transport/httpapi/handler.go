@@ -278,12 +278,24 @@ func (h *Handler) authMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": nil})
 }
 
+// sessionCookieSameSite is Lax for local HTTP dev (web and api are same-site
+// localhost, just different ports) and None for deployments where the API is a
+// separate site (e.g. two different Cloud Run services) — the browser never sends
+// a Lax cookie on the cross-site fetch() the frontend uses. None requires Secure,
+// which secureCookies already guarantees whenever this returns None.
+func (h *Handler) sessionCookieSameSite() http.SameSite {
+	if h.secureCookies {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
+}
+
 func (h *Handler) setSessionCookie(w http.ResponseWriter, token string) {
-	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Value: token, Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: 30 * 24 * 60 * 60})
+	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Value: token, Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: h.sessionCookieSameSite(), MaxAge: 30 * 24 * 60 * 60})
 }
 
 func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "happy_tasks_session", Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: h.sessionCookieSameSite(), MaxAge: -1})
 }
 
 func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {

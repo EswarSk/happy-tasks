@@ -42,6 +42,19 @@ func (p *Postgres) Ping(ctx context.Context) error { return p.pool.Ping(ctx) }
 
 const defaultOrganizationID = "00000000-0000-7000-8000-000000000100"
 
+// showcaseProjectIDs are the fixture projects from db/seed/demo.sql and
+// db/seed/scenarios.sql. Every new signup is added to them (as a member, not
+// owner) alongside their own private project, so there's something populated to
+// explore without handing out shared login credentials. The INSERT below no-ops
+// when a project doesn't exist (e.g. an unseeded dev/CI database), so this never
+// blocks registration.
+var showcaseProjectIDs = []string{
+	"01000000-0000-7000-8000-000000000001", // Realtime Launch
+	"01000000-0000-7000-8000-000000000002", // Mobile Experience
+	"02000000-0000-7000-8000-000000000001", // Scale & Scenario Lab
+	"02000000-0000-7000-8000-000000000002", // Empty Sandbox
+}
+
 func (p *Postgres) CreateUser(ctx context.Context, displayName, email, passwordHash string) (domain.User, error) {
 	id := uuid.Must(uuid.NewV7()).String()
 	tx, err := p.pool.Begin(ctx)
@@ -74,6 +87,15 @@ func (p *Postgres) CreateUser(ctx context.Context, displayName, email, passwordH
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO project_streams(project_id, last_sequence) VALUES ($1, 0)`, projectID); err != nil {
 		return domain.User{}, err
+	}
+	for _, showcaseID := range showcaseProjectIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO project_members(project_id, user_id, role, status, invited_by, joined_at)
+			SELECT $1, $2, 'MEMBER', 'ACTIVE', $2, now()
+			WHERE EXISTS (SELECT 1 FROM projects WHERE id = $1)
+			ON CONFLICT (project_id, user_id) DO NOTHING`, showcaseID, user.ID); err != nil {
+			return domain.User{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return domain.User{}, err
