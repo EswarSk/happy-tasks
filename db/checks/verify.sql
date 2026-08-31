@@ -12,7 +12,8 @@ BEGIN
             ('task_assignees'), ('task_tags'), ('task_dependencies'),
             ('comments'), ('comment_reactions'), ('notifications'), ('project_streams'), ('sync_events'),
             ('idempotency_keys'), ('organizations'), ('organization_members'), ('auth_sessions'), ('task_attachments'),
-            ('attachment_object_deletions')
+            ('attachment_object_deletions'), ('agent_runs'), ('agent_run_nodes'),
+            ('agent_run_edges'), ('agent_run_events')
     ) AS expected(name)
     WHERE to_regclass('public.' || expected.name) IS NULL;
 

@@ -1,4 +1,5 @@
 import type {
+  AgentRun,
   AssignmentHistoryItem,
   ActivityItem,
   Attachment,
@@ -312,11 +313,47 @@ export class MockWorkspaceApi implements WorkspaceApi {
     };
   }
 
+  async listMemberCandidates(): Promise<Page<Member>> {
+	return { items: [], nextCursor: null, totalCount: 0 };
+  }
+
+  async addProjectMember(_projectId: string, userId: string): Promise<Member> {
+	const member = demoMembers.find((item) => item.id === userId);
+	if (!member) throw new WorkspaceApiError(404, { code: "USER_NOT_FOUND", message: "User not found." });
+	return structuredClone(member);
+  }
+
   async getTask(projectId: string, taskId: string) {
     await delay(130);
     const task = tasksFor(projectId).find((item) => item.id === taskId);
     if (!task) throw new WorkspaceApiError(404, { code: "TASK_NOT_FOUND", message: "Task not found." });
     return structuredClone(task);
+  }
+
+  async getLatestAgentRun(projectId: string, taskId: string): Promise<AgentRun> {
+    await delay(100);
+    const now = new Date().toISOString();
+    const nodeIds = [1, 2, 3, 4].map((index) => `${taskId}-agent-${index}`);
+    return {
+      id: `${taskId}-run`, projectId, taskId, orchestrator: "happyrobot", externalRunId: `mock-${taskId}`,
+      workflowName: "Task delivery", definitionId: "task-delivery", definitionVersion: "1", status: "RUNNING",
+      startedAt: now, createdAt: now, updatedAt: now,
+      nodes: [
+        { id: nodeIds[0], externalNodeId: "plan", agentName: "Coordinator", label: "Plan execution", nodeType: "orchestrator", status: "SUCCEEDED", attempt: 1, positionX: 120, positionY: 240, output: {}, updatedAt: now },
+        { id: nodeIds[1], externalNodeId: "inspect", agentName: "Repository analyst", label: "Inspect context", nodeType: "agent", status: "SUCCEEDED", attempt: 1, positionX: 450, positionY: 100, output: {}, updatedAt: now },
+        { id: nodeIds[2], externalNodeId: "deliver", agentName: "Delivery agent", label: "Produce outcome", nodeType: "agent", status: "RUNNING", attempt: 1, positionX: 450, positionY: 380, output: {}, updatedAt: now },
+        { id: nodeIds[3], externalNodeId: "verify", agentName: "Verification agent", label: "Verify result", nodeType: "agent", status: "PENDING", attempt: 1, positionX: 800, positionY: 240, output: {}, updatedAt: now },
+      ],
+      edges: [
+        { sourceNodeId: nodeIds[0], targetNodeId: nodeIds[1], label: "" }, { sourceNodeId: nodeIds[0], targetNodeId: nodeIds[2], label: "" },
+        { sourceNodeId: nodeIds[1], targetNodeId: nodeIds[3], label: "" }, { sourceNodeId: nodeIds[2], targetNodeId: nodeIds[3], label: "" },
+      ],
+      events: [
+        { sequence: 1, externalEventId: "event-1", eventType: "run.started", message: "Workflow run started", payload: {}, occurredAt: now },
+        { sequence: 2, externalEventId: "event-2", nodeId: nodeIds[0], eventType: "node.succeeded", message: "Execution plan created", payload: {}, occurredAt: now },
+        { sequence: 3, externalEventId: "event-3", nodeId: nodeIds[2], eventType: "node.started", message: "Producing the requested outcome", payload: {}, occurredAt: now },
+      ],
+    };
   }
 
   async createTask(projectId: string, title: string) {

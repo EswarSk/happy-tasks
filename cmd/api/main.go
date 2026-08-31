@@ -111,7 +111,7 @@ func main() {
 	}
 }
 
-func cleanupAttachmentObjects(ctx context.Context, logger *slog.Logger, db *database.Postgres, attachments *objectstorage.S3) {
+func cleanupAttachmentObjects(ctx context.Context, logger *slog.Logger, db *database.Postgres, attachments objectstorage.Store) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {

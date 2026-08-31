@@ -1,4 +1,5 @@
 import type {
+  AgentRun,
   AssignmentHistoryItem,
   ActivityItem,
   Attachment,
@@ -159,6 +160,24 @@ export class HttpWorkspaceApi implements WorkspaceApi {
     return { items, nextCursor: page.nextCursor ?? null, totalCount: items.length };
   }
 
+  async listMemberCandidates(projectId: string, filters: Pick<MemberFilters, "search" | "cursor" | "limit"> = {}): Promise<Page<Member>> {
+    const params = new URLSearchParams({ limit: String(filters.limit ?? 25) });
+    if (filters.search) params.set("q", filters.search);
+    if (filters.cursor) params.set("cursor", filters.cursor);
+    const page = await this.request<{ items: ApiUser[]; nextCursor?: string }>(`/v1/projects/${projectId}/members/candidates?${params}`);
+    const items = page.items.map((user, index) => ({ id: user.id, displayName: user.displayName, email: user.email ?? "", color: memberColors[index % memberColors.length], userStatus: user.status }));
+    return { items, nextCursor: page.nextCursor ?? null, totalCount: items.length };
+  }
+
+  async addProjectMember(projectId: string, userId: string): Promise<Member> {
+    const membership = await this.request<ApiMembership>(`/v1/projects/${projectId}/members`, {
+      method: "POST",
+      headers: { "Idempotency-Key": newRequestId() },
+      body: JSON.stringify({ userId, role: "MEMBER", status: "ACTIVE" }),
+    });
+    return normalizeMember(membership, 0);
+  }
+
   async listTasks(projectId: string, filters: TaskFilters): Promise<Page<Task>> {
     const params = new URLSearchParams();
     if (filters.cursor) params.set("cursor", filters.cursor);
@@ -175,6 +194,15 @@ export class HttpWorkspaceApi implements WorkspaceApi {
 
   async getTask(projectId: string, taskId: string) {
     return normalizeTask(await this.request<ApiTask>(`/v1/projects/${projectId}/tasks/${taskId}`));
+  }
+
+  async getLatestAgentRun(projectId: string, taskId: string): Promise<AgentRun | null> {
+    try {
+      return await this.request<AgentRun>(`/v1/projects/${projectId}/tasks/${taskId}/agent-runs/latest`);
+    } catch (error) {
+      if (error instanceof WorkspaceApiError && error.status === 404) return null;
+      throw error;
+    }
   }
 
   async createTask(projectId: string, title: string) {

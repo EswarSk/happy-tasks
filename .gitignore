@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+deploy/cloudrun/env
 bin/
 coverage/
 *.coverprofile

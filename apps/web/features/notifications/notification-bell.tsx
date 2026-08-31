@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Check, MessageCircle } from "lucide-react";
+import { Bell, Check, MessageCircle, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -32,15 +32,16 @@ export function NotificationBell({ projectId, members }: { projectId: string; me
       </Button>
       {open && (
         <div className="absolute top-11 right-0 z-30 w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-xl" role="dialog" aria-label="Notifications">
-          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-3"><div><p className="text-sm font-semibold">Notifications</p><p className="text-[11px] text-[var(--text-muted)]">Mentions from your project</p></div><span className="text-[11px] font-medium text-[var(--text-muted)]">{notifications.length} unread</span></div>
+          <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-4 py-3"><div><p className="text-sm font-semibold">Notifications</p><p className="text-[11px] text-[var(--text-muted)]">Task updates and mentions</p></div><span className="text-[11px] font-medium text-[var(--text-muted)]">{query.data?.nextCursor ? "50+" : notifications.length} unread</span></div>
           <div className="max-h-80 overflow-y-auto p-2">
             {query.isLoading && <p className="px-3 py-8 text-center text-xs text-[var(--text-muted)]">Loading notifications…</p>}
-            {!query.isLoading && notifications.length === 0 && <div className="px-3 py-8 text-center"><Check className="mx-auto size-5 text-[var(--success)]" /><p className="mt-2 text-sm font-medium">You’re all caught up</p><p className="mt-1 text-xs text-[var(--text-muted)]">Mention a teammate with @name in a comment.</p></div>}
+            {query.isError && <div className="px-3 py-8 text-center"><p className="text-sm font-medium">Notifications couldn’t load</p><Button variant="ghost" size="sm" className="mt-2" onClick={() => void query.refetch()}>Retry</Button></div>}
+            {!query.isLoading && !query.isError && notifications.length === 0 && <div className="px-3 py-8 text-center"><Check className="mx-auto size-5 text-[var(--success)]" /><p className="mt-2 text-sm font-medium">You’re all caught up</p><p className="mt-1 text-xs text-[var(--text-muted)]">Updates to your assigned tasks and mentions appear here.</p></div>}
             {notifications.map((notification) => {
               const actor = memberById.get(notification.actorId);
               return <button key={notification.id} type="button" className="flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left hover:bg-[var(--hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]" onClick={() => { markRead.mutate(notification.id); setOpen(false); router.push(`/projects/${projectId}/tasks/${notification.taskId}`); }}>
                 <Avatar name={actor?.displayName ?? "Collaborator"} color={actor?.color} className="mt-0.5" />
-                <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5 text-sm font-medium"><MessageCircle className="size-3.5 text-[var(--brand)]" />{actor?.displayName ?? "A collaborator"}</span><span className="mt-1 block text-xs text-[var(--text-secondary)]">{notification.body}</span><span className={cn("mt-1 block text-[11px]", notification.readAt ? "text-[var(--text-muted)]" : "text-[var(--brand)]")}>{relativeTime(notification.createdAt)}</span></span>
+                <span className="min-w-0 flex-1"><span className="flex items-center gap-1.5 text-sm font-medium">{notification.type === "TASK_UPDATED" ? <RefreshCw className="size-3.5 text-[var(--brand)]" /> : <MessageCircle className="size-3.5 text-[var(--brand)]" />}{actor?.displayName ?? "A collaborator"}</span><span className="mt-1 block text-xs text-[var(--text-secondary)]">{notification.body}</span><span className={cn("mt-1 block text-[11px]", notification.readAt ? "text-[var(--text-muted)]" : "text-[var(--brand)]")}>{relativeTime(notification.createdAt)}</span></span>
               </button>;
             })}
           </div>

@@ -314,6 +314,105 @@ func (p *Postgres) GetTask(ctx context.Context, projectID, taskID string) (domai
 	return getTask(ctx, p.pool, projectID, taskID)
 }
 
+func (p *Postgres) GetLatestAgentRun(ctx context.Context, projectID, taskID string) (domain.AgentRun, error) {
+	var run domain.AgentRun
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, project_id, task_id, orchestrator, external_run_id, workflow_name,
+		       definition_id, definition_version, status, started_at, completed_at, created_at, updated_at
+		FROM agent_runs
+		WHERE project_id = $1 AND task_id = $2
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, projectID, taskID).Scan(
+		&run.ID, &run.ProjectID, &run.TaskID, &run.Orchestrator, &run.ExternalRunID, &run.WorkflowName,
+		&run.DefinitionID, &run.DefinitionVersion, &run.Status, &run.StartedAt, &run.CompletedAt, &run.CreatedAt, &run.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.AgentRun{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	run.Nodes = make([]domain.AgentRunNode, 0)
+	run.Edges = make([]domain.AgentRunEdge, 0)
+	run.Events = make([]domain.AgentRunEvent, 0)
+
+	nodeRows, err := p.pool.Query(ctx, `
+		SELECT id, external_node_id, agent_name, label, node_type, status, attempt,
+		       position_x, position_y, output, error, started_at, completed_at, updated_at
+		FROM agent_run_nodes
+		WHERE run_id = $1
+		ORDER BY position_x, position_y, id`, run.ID)
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	for nodeRows.Next() {
+		var node domain.AgentRunNode
+		var output []byte
+		if err := nodeRows.Scan(&node.ID, &node.ExternalNodeID, &node.AgentName, &node.Label, &node.NodeType, &node.Status, &node.Attempt, &node.PositionX, &node.PositionY, &output, &node.Error, &node.StartedAt, &node.CompletedAt, &node.UpdatedAt); err != nil {
+			nodeRows.Close()
+			return domain.AgentRun{}, err
+		}
+		if err := json.Unmarshal(output, &node.Output); err != nil {
+			nodeRows.Close()
+			return domain.AgentRun{}, err
+		}
+		run.Nodes = append(run.Nodes, node)
+	}
+	nodeRows.Close()
+	if err := nodeRows.Err(); err != nil {
+		return domain.AgentRun{}, err
+	}
+
+	edgeRows, err := p.pool.Query(ctx, `
+		SELECT source_node_id, target_node_id, label
+		FROM agent_run_edges
+		WHERE run_id = $1
+		ORDER BY source_node_id, target_node_id`, run.ID)
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	for edgeRows.Next() {
+		var edge domain.AgentRunEdge
+		if err := edgeRows.Scan(&edge.SourceNodeID, &edge.TargetNodeID, &edge.Label); err != nil {
+			edgeRows.Close()
+			return domain.AgentRun{}, err
+		}
+		run.Edges = append(run.Edges, edge)
+	}
+	edgeRows.Close()
+	if err := edgeRows.Err(); err != nil {
+		return domain.AgentRun{}, err
+	}
+
+	eventRows, err := p.pool.Query(ctx, `
+		SELECT sequence, external_event_id, node_id, event_type, message, payload, occurred_at
+		FROM (
+			SELECT sequence, external_event_id, node_id, event_type, message, payload, occurred_at
+			FROM agent_run_events
+			WHERE run_id = $1
+			ORDER BY sequence DESC
+			LIMIT 200
+		) recent
+		ORDER BY sequence`, run.ID)
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	for eventRows.Next() {
+		var event domain.AgentRunEvent
+		var payload []byte
+		if err := eventRows.Scan(&event.Sequence, &event.ExternalEventID, &event.NodeID, &event.EventType, &event.Message, &payload, &event.OccurredAt); err != nil {
+			eventRows.Close()
+			return domain.AgentRun{}, err
+		}
+		if err := json.Unmarshal(payload, &event.Payload); err != nil {
+			eventRows.Close()
+			return domain.AgentRun{}, err
+		}
+		run.Events = append(run.Events, event)
+	}
+	eventRows.Close()
+	return run, eventRows.Err()
+}
+
 func (p *Postgres) ScheduleAttachmentObjectCleanup(ctx context.Context, storageKey string, deleteAfter time.Time) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO attachment_object_deletions(storage_key, delete_after)
@@ -814,6 +913,43 @@ func (s *store) CountActiveOwners(ctx context.Context, projectID string) (int, e
 		  AND membership.role = 'OWNER'
 		  AND person.status = 'ACTIVE'`, projectID).Scan(&count)
 	return count, err
+}
+
+func (s *store) ListMemberCandidates(ctx context.Context, projectID string, filter app.MemberFilter) ([]domain.User, error) {
+	var cursorName, cursorID any
+	if filter.Cursor != nil {
+		cursorName, cursorID = filter.Cursor.DisplayName, filter.Cursor.ID
+	}
+	rows, err := s.q.Query(ctx, `
+		SELECT person.id, person.display_name, person.email, person.status, person.avatar_url,
+		       person.profile_updated_at, person.created_at, person.updated_at
+		FROM projects project
+		JOIN organization_members organization_membership
+		  ON organization_membership.organization_id = project.organization_id
+		 AND organization_membership.status = 'ACTIVE'
+		JOIN users person ON person.id = organization_membership.user_id AND person.status = 'ACTIVE'
+		LEFT JOIN project_members membership
+		  ON membership.project_id = project.id AND membership.user_id = person.id
+		WHERE project.id = $1
+		  AND membership.user_id IS NULL
+		  AND ($2::text = '' OR person.display_name ILIKE '%' || $2 || '%'
+		       OR person.email::text ILIKE '%' || $2 || '%')
+		  AND ($3::text IS NULL OR (lower(person.display_name), person.id) > ($3, $4::uuid))
+		ORDER BY lower(person.display_name), person.id
+		LIMIT $5`, projectID, filter.Search, cursorName, cursorID, filter.PageSize)
+	if err != nil {
+		return nil, fmt.Errorf("list project member candidates: %w", err)
+	}
+	defer rows.Close()
+	items := make([]domain.User, 0, filter.PageSize)
+	for rows.Next() {
+		item, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *store) CreateMembership(ctx context.Context, projectID string, input app.CreateMembershipInput, actorID string) (domain.Membership, error) {
@@ -1380,6 +1516,29 @@ func (s *store) CreateMentionNotifications(ctx context.Context, projectID, taskI
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *store) CreateTaskUpdateNotifications(ctx context.Context, projectID, taskID, actorID, requestID string, recipientIDs []string) error {
+	_, err := s.q.Exec(ctx, `
+		INSERT INTO notifications (id, project_id, user_id, task_id, actor_id, notification_type, body, request_id)
+		SELECT gen_random_uuid(), $1, membership.user_id, $2, $3, 'TASK_UPDATED', task.title || ' was updated.', $4
+		FROM project_members membership
+		JOIN users person ON person.id = membership.user_id
+		JOIN projects project ON project.id = membership.project_id
+		JOIN organization_members organization_membership
+		  ON organization_membership.organization_id = project.organization_id
+		 AND organization_membership.user_id = membership.user_id
+		JOIN tasks task ON task.project_id = membership.project_id AND task.id = $2
+		WHERE membership.project_id = $1
+		  AND membership.user_id = ANY($5::uuid[])
+		  AND membership.user_id <> $3
+		  AND membership.status = 'ACTIVE'
+		  AND organization_membership.status = 'ACTIVE'
+		  AND person.status = 'ACTIVE'
+		ON CONFLICT (project_id, user_id, notification_type, request_id)
+		WHERE notification_type = 'TASK_UPDATED'
+		DO NOTHING`, projectID, taskID, actorID, requestID, recipientIDs)
+	return err
 }
 
 func (s *store) MarkNotificationRead(ctx context.Context, projectID, actorID, notificationID string) (domain.Notification, error) {

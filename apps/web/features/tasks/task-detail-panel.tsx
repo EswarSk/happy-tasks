@@ -2,7 +2,7 @@
 
 import * as Tabs from "@radix-ui/react-tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, AlertTriangle, Check, ChevronRight, Copy, FileText, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Paperclip, Redo2, Save, Search, Trash2, Undo2, X } from "lucide-react";
+import { Activity, AlertTriangle, Check, ChevronRight, Copy, ExternalLink, FileText, Link2, Maximize2, MessageSquare, Minimize2, MoreHorizontal, Paperclip, Redo2, Save, Search, Trash2, Undo2, Workflow, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -189,6 +189,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
         </div>
         <Input value={title} onChange={(event) => setDraft({ taskId: task.id, title: event.target.value, description })} className="h-auto min-w-0 truncate rounded-none border-0 bg-transparent px-0 py-1 text-lg font-semibold shadow-none focus:bg-transparent focus:ring-0" aria-label="Task title" />
         <PresenceStrip collaborators={collaborators} members={members} />
+        <a href={`/projects/${projectId}/tasks/${taskId}/agentic`} target="_blank" rel="noreferrer" className="mt-2 inline-flex min-h-8 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-3 text-xs font-semibold text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"><Workflow className="size-3.5" />Open agentic view<ExternalLink className="size-3" /></a>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">

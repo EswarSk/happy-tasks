@@ -202,6 +202,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/members/candidates": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Development identity. Defaults to the seeded demo actor locally. */
+                "X-Actor-ID"?: components["parameters"]["ActorId"];
+            };
+            path: {
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        /** @description Lists active users in the project's organization who are not project members. Restricted to project owners and admins. */
+        get: operations["listProjectMemberCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/members/{membershipId}": {
         parameters: {
             query?: never;
@@ -448,6 +470,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/tasks/{taskId}/agent-runs/latest": {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Development identity. Defaults to the seeded demo actor locally. */
+                "X-Actor-ID"?: components["parameters"]["ActorId"];
+            };
+            path: {
+                projectId: components["parameters"]["ProjectId"];
+                taskId: components["parameters"]["TaskId"];
+            };
+            cookie?: never;
+        };
+        /** @description Returns the latest persisted execution graph and its most recent 200 ordered audit events. The external orchestrator remains authoritative for execution. */
+        get: operations["getLatestAgentRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/tasks/{taskId}/attachments/{attachmentId}": {
         parameters: {
             query?: never;
@@ -546,7 +591,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Lists mention notifications for the current project member, newest first. */
+        /** @description Lists task-update and mention notifications for the current project member, newest first. */
         get: operations["listNotifications"];
         put?: never;
         post?: never;
@@ -594,6 +639,10 @@ export interface components {
         };
         AuthResponse: {
             user: components["schemas"]["User"];
+        };
+        UserPage: {
+            items: components["schemas"]["User"][];
+            nextCursor?: string;
         };
         /** @enum {string} */
         TaskStatus: "TODO" | "IN_PROGRESS" | "BLOCKED" | "DONE";
@@ -891,6 +940,76 @@ export interface components {
             /** Format: date-time */
             occurredAt: string;
         };
+        AgentRun: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            projectId: string;
+            /** Format: uuid */
+            taskId: string;
+            orchestrator: string;
+            externalRunId: string;
+            workflowName: string;
+            definitionId: string;
+            definitionVersion: string;
+            /** @enum {string} */
+            status: "PENDING" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+            /** Format: date-time */
+            startedAt?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            nodes: components["schemas"]["AgentRunNode"][];
+            edges: components["schemas"]["AgentRunEdge"][];
+            events: components["schemas"]["AgentRunEvent"][];
+        };
+        AgentRunNode: {
+            /** Format: uuid */
+            id: string;
+            externalNodeId: string;
+            agentName: string;
+            label: string;
+            nodeType: string;
+            /** @enum {string} */
+            status: "PENDING" | "READY" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "SKIPPED" | "CANCELLED";
+            attempt: number;
+            positionX: number;
+            positionY: number;
+            output: {
+                [key: string]: unknown;
+            };
+            error?: string;
+            /** Format: date-time */
+            startedAt?: string;
+            /** Format: date-time */
+            completedAt?: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AgentRunEdge: {
+            /** Format: uuid */
+            sourceNodeId: string;
+            /** Format: uuid */
+            targetNodeId: string;
+            label: string;
+        };
+        AgentRunEvent: {
+            /** Format: int64 */
+            sequence: number;
+            externalEventId: string;
+            /** Format: uuid */
+            nodeId?: string;
+            eventType: string;
+            message: string;
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            occurredAt: string;
+        };
         ActivityPage: {
             items: components["schemas"]["ActivityItem"][];
             nextCursor?: string;
@@ -905,11 +1024,11 @@ export interface components {
             /** Format: uuid */
             taskId: string;
             /** Format: uuid */
-            commentId: string;
+            commentId?: string;
             /** Format: uuid */
             actorId: string;
             /** @enum {string} */
-            type: "MENTION";
+            type: "MENTION" | "TASK_UPDATED";
             body: string;
             /** Format: date-time */
             readAt?: string;
@@ -1367,6 +1486,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Membership"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listProjectMemberCandidates: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+                q?: string;
+            };
+            header?: {
+                /** @description Development identity. Defaults to the seeded demo actor locally. */
+                "X-Actor-ID"?: components["parameters"]["ActorId"];
+            };
+            path: {
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Eligible organization users ordered by display name and stable user ID. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserPage"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1909,6 +2058,33 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getLatestAgentRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Development identity. Defaults to the seeded demo actor locally. */
+                "X-Actor-ID"?: components["parameters"]["ActorId"];
+            };
+            path: {
+                projectId: components["parameters"]["ProjectId"];
+                taskId: components["parameters"]["TaskId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest runtime graph linked to this task. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRun"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     downloadTaskAttachment: {
         parameters: {
             query?: never;
@@ -2059,7 +2235,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Mention notifications. */
+            /** @description Task-update and mention notifications. */
             200: {
                 headers: {
                     [name: string]: unknown;

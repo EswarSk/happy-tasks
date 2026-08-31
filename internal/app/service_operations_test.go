@@ -1,6 +1,7 @@
 package app
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/eswaravegi/happy-task-management/internal/domain"
@@ -16,6 +17,14 @@ func TestTaskOperationFieldsAllowIndependentEdits(t *testing.T) {
 	}
 	if !fieldsOverlap(statusFields, []string{"status", "description"}) {
 		t.Fatal("same-field operation should conflict")
+	}
+}
+
+func TestTaskUpdateRecipientsIncludePreviousAndCurrentAssignees(t *testing.T) {
+	got := taskUpdateRecipientIDs([]string{"maya", "avery"}, []string{"avery", "noah", "noah"}, "avery")
+	want := []string{"maya", "noah"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("recipients = %v, want %v", got, want)
 	}
 }
 

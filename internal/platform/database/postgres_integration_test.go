@@ -49,6 +49,21 @@ func TestTransactionalFlows(t *testing.T) {
 	if demoTaskCount < 5 {
 		t.Fatalf("demo task count = %d, want at least 5", demoTaskCount)
 	}
+	candidateProjectID := uuid.Must(uuid.NewV7()).String()
+	if _, err := service.CreateProject(ctx, testMeta("candidate-project:"+candidateProjectID), app.CreateProjectInput{ID: candidateProjectID, Name: "Membership candidate test"}); err != nil {
+		t.Fatalf("create candidate project: %v", err)
+	}
+	candidates, err := service.ListMemberCandidates(ctx, testActor, candidateProjectID, app.MemberFilter{Search: "Noah", PageSize: 10})
+	if err != nil || len(candidates.Items) != 1 || candidates.Items[0].DisplayName != "Noah Williams" {
+		t.Fatalf("member candidates = %#v, error = %v", candidates.Items, err)
+	}
+	if _, err := service.CreateMembership(ctx, testMeta("candidate-member:"+candidateProjectID), candidateProjectID, app.CreateMembershipInput{UserID: candidates.Items[0].ID, Role: domain.RoleMember, Status: domain.MembershipActive}); err != nil {
+		t.Fatalf("add candidate member: %v", err)
+	}
+	candidates, err = service.ListMemberCandidates(ctx, testActor, candidateProjectID, app.MemberFilter{Search: "Noah", PageSize: 10})
+	if err != nil || len(candidates.Items) != 0 {
+		t.Fatalf("added member remained a candidate: %#v, error = %v", candidates.Items, err)
+	}
 	priority := domain.PriorityHigh
 	filtered, err := service.ListTasks(ctx, testActor, testProject, app.TaskFilter{
 		Priority: &priority,

@@ -12,6 +12,31 @@ test("opens a task dependency map from the virtualized workspace", async ({ page
   await expect(page.locator('h2:has-text("Properties"):visible')).toBeVisible();
 });
 
+test("keeps collapsed project navigation identifiable", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
+
+  await expect(page.getByRole("link", { name: "Project Atlas" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /coming soon/ })).toHaveCount(0);
+  const appMark = await page.getByTestId("app-mark").boundingBox();
+  const createProject = await page.getByRole("button", { name: "Create project" }).boundingBox();
+  expect(Math.abs((appMark?.x ?? 0) + (appMark?.width ?? 0) / 2 - ((createProject?.x ?? 0) + (createProject?.width ?? 0) / 2))).toBeLessThan(1);
+});
+
+test("opens the agentic workflow in a new tab", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('button[aria-label^="Open ATL-"]:visible').first().click();
+
+  const popupPromise = page.waitForEvent("popup");
+  await page.getByRole("link", { name: "Open agentic view" }).click();
+  const agenticPage = await popupPromise;
+
+  await expect(agenticPage).toHaveURL(/\/projects\/[^/]+\/tasks\/[^/]+\/agentic/);
+  await expect(agenticPage.getByRole("heading", { name: "Task delivery" })).toBeVisible();
+  await expect(agenticPage.getByLabel("Agent workflow canvas")).toBeVisible();
+  await expect(agenticPage.getByLabel("Execution details")).toBeVisible();
+});
+
 test("filters the task list by tag", async ({ page }) => {
   await page.goto("/");
   const tagFilter = page.getByRole("textbox", { name: "Filter by tag" });

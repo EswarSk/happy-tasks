@@ -15,6 +15,8 @@ import type { Member, Project } from "@/lib/api";
 import { dataSource, workspaceApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+const projectInitials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+
 export function ProjectSidebar({ open, onClose, currentActor, collapsed = false, onToggleCollapse, onCreateTask }: { open: boolean; onClose: () => void; currentActor?: Member; collapsed?: boolean; onToggleCollapse: () => void; onCreateTask?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -76,17 +78,17 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
 
   const renderContent = (isCollapsed: boolean) => (
     <aside className={cn("flex h-full flex-col overflow-hidden border border-[var(--border)] bg-[var(--sidebar)] shadow-sm shadow-[var(--shadow)] transition-[width] duration-200 lg:rounded-xl", isCollapsed ? "w-[80px]" : "w-[260px]")}>
-      <div className={cn("flex h-[72px] items-center border-b border-[var(--border-subtle)]", isCollapsed ? "gap-1 px-1" : "gap-3 px-5")}>
-        <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--brand)] text-[var(--primary-foreground)] shadow-sm"><Boxes className="size-[18px]" /></div>
+      <div className={cn("flex h-[72px] items-center border-b border-[var(--border-subtle)]", isCollapsed ? "relative justify-center px-2" : "gap-3 px-5")}>
+        <div data-testid="app-mark" className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--brand)] text-[var(--primary-foreground)] shadow-sm"><Boxes className="size-[18px]" /></div>
         {!isCollapsed && <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold tracking-tight">Happy Tasks</div>
           <div className="text-xs text-[var(--text-muted)]">Collaborative workspace</div>
         </div>}
-        <Button variant="ghost" size="icon" className={cn("ml-auto hidden shrink-0 rounded-md lg:inline-flex focus-visible:ring-[var(--border)]", isCollapsed && "size-7")} onClick={onToggleCollapse} aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"} title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}><ChevronsLeft className={cn("size-4 transition-transform", isCollapsed && "rotate-180")} /></Button>
+        <Button variant="ghost" size="icon" className={cn("hidden shrink-0 rounded-md lg:inline-flex focus-visible:ring-[var(--border)]", isCollapsed ? "absolute -right-3 size-6 rounded-full border border-[var(--border)] bg-[var(--panel)] shadow-sm" : "ml-auto")} onClick={onToggleCollapse} aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"} title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}><ChevronsLeft className={cn("size-4 transition-transform", isCollapsed && "rotate-180")} /></Button>
       </div>
 
       <nav className={cn("flex-1 overflow-y-auto py-5", isCollapsed ? "px-2" : "px-3")} aria-label="Projects">
-        <div className={cn("mb-3 flex items-center justify-between", isCollapsed ? "px-0" : "px-2")}>
+        <div className={cn("mb-3 flex items-center", isCollapsed ? "justify-center px-0" : "justify-between px-2")}>
           {!isCollapsed && <span className="text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Projects</span>}
           <Button variant="ghost" size="icon" className="size-7" aria-label="Create project" onClick={() => setCreateOpen(true)}><Plus className="size-3.5" /></Button>
         </div>
@@ -100,10 +102,13 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
                 href={`/projects/${project.id}`}
                 onClick={onClose}
                 title={isCollapsed ? project.name : undefined}
+                aria-label={isCollapsed ? project.name : undefined}
                 aria-current={active ? "page" : undefined}
                 className={cn("group flex min-h-9 items-center rounded-md border border-transparent text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3", active ? cn("text-[var(--text)]", !isCollapsed && "lg:border-[var(--border)] lg:bg-[var(--selected)]") : "text-[var(--text-secondary)] hover:bg-[var(--hover)] hover:text-[var(--text)]")}
               >
-                <span className={cn("size-2.5 rounded-full", active ? "bg-[var(--text)]" : "bg-[var(--text-muted)]")} />
+                {isCollapsed
+                  ? <span aria-hidden="true" className={cn("grid size-7 place-items-center rounded-md border text-[10px] font-semibold", active ? "border-[var(--brand)] bg-[var(--brand)] text-[var(--primary-foreground)]" : "border-[var(--border)] bg-[var(--panel)] text-[var(--text-secondary)]")}>{projectInitials(project.name)}</span>
+                  : <span className={cn("size-2.5 rounded-full", active ? "bg-[var(--text)]" : "bg-[var(--text-muted)]")} />}
                 {!isCollapsed && <span className="min-w-0 flex-1 truncate">{project.name}</span>}
                 {!isCollapsed && active && <span className="rounded-full bg-[var(--panel)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]">{project.taskCount >= 1000 ? `${Math.floor(project.taskCount / 1000)}k` : project.taskCount}</span>}
               </Link>
@@ -115,10 +120,11 @@ export function ProjectSidebar({ open, onClose, currentActor, collapsed = false,
         <button type="button" className={cn("flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openGlobalSearch} title={isCollapsed ? "Search all tasks" : undefined} aria-label="Search all tasks"><Search className="size-4" />{!isCollapsed && "Search all tasks"}</button>
         {currentProjectId && <Link href={`/projects/${currentProjectId}/activity`} onClick={onClose} aria-current={pathname.endsWith("/activity") ? "page" : undefined} title={isCollapsed ? "Activity" : undefined} className={cn("mt-1 flex min-h-9 items-center rounded-md text-sm font-medium outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3", pathname.endsWith("/activity") ? "bg-[var(--selected)] text-[var(--text)]" : "text-[var(--text-secondary)]")}><Activity className="size-4" />{!isCollapsed && "Activity"}</Link>}
         <button type="button" className={cn("mt-1 flex min-h-9 w-full items-center rounded-md text-sm font-medium text-[var(--text-secondary)] outline-none hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:ring-2 focus-visible:ring-[var(--focus)]", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")} onClick={openWorkspaceSettings} title={isCollapsed ? "Workspace settings" : undefined} aria-label="Workspace settings"><Settings2 className="size-4" />{!isCollapsed && "Workspace settings"}</button>
-        {!isCollapsed && <div className="mb-2 mt-5 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Views</div>}
-        <button type="button" disabled title="All tasks view — coming soon" aria-label="All tasks view — coming soon" className={cn("flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><ListTodo className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">All tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
-        <button type="button" disabled title="My tasks view — coming soon" aria-label="My tasks view — coming soon" className={cn("mt-1 flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><UserRound className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">My tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
-        <button type="button" disabled title="Favorites view — coming soon" aria-label="Favorites view — coming soon" className={cn("mt-1 flex min-h-9 w-full cursor-default items-center rounded-md text-sm font-medium text-[var(--text-muted)] opacity-70", isCollapsed ? "justify-center px-0" : "gap-2.5 px-3")}><Star className="size-4" />{!isCollapsed && <><span className="flex-1 text-left">Favorites</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></>}</button>
+        {!isCollapsed && <><div className="mb-2 mt-5 px-2 text-[11px] font-semibold tracking-[.08em] text-[var(--text-muted)] uppercase">Views</div>
+          <button type="button" disabled title="All tasks view — coming soon" aria-label="All tasks view — coming soon" className="flex min-h-9 w-full cursor-default items-center gap-2.5 rounded-md px-3 text-sm font-medium text-[var(--text-muted)] opacity-70"><ListTodo className="size-4" /><span className="flex-1 text-left">All tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></button>
+          <button type="button" disabled title="My tasks view — coming soon" aria-label="My tasks view — coming soon" className="mt-1 flex min-h-9 w-full cursor-default items-center gap-2.5 rounded-md px-3 text-sm font-medium text-[var(--text-muted)] opacity-70"><UserRound className="size-4" /><span className="flex-1 text-left">My tasks</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></button>
+          <button type="button" disabled title="Favorites view — coming soon" aria-label="Favorites view — coming soon" className="mt-1 flex min-h-9 w-full cursor-default items-center gap-2.5 rounded-md px-3 text-sm font-medium text-[var(--text-muted)] opacity-70"><Star className="size-4" /><span className="flex-1 text-left">Favorites</span><span className="text-[10px] font-medium uppercase tracking-wide">Soon</span></button>
+        </>}
       </nav>
 
       <div className="border-t border-[var(--border)] p-3">

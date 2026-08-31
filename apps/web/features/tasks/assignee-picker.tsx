@@ -1,14 +1,15 @@
 "use client";
 
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Search, UserPlus, X } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { Member } from "@/lib/api";
-import { workspaceApi } from "@/lib/api";
+import { WorkspaceApiError, workspaceApi } from "@/lib/api";
 
 interface AssigneePickerProps {
   projectId: string;
@@ -19,6 +20,7 @@ interface AssigneePickerProps {
 }
 
 export function AssigneePicker({ projectId, assignedIds, memberPreview, disabled, onChange }: AssigneePickerProps) {
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search.trim());
@@ -29,11 +31,31 @@ export function AssigneePicker({ projectId, assignedIds, memberPreview, disabled
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     enabled: open,
   });
+  const candidatesQuery = useInfiniteQuery({
+    queryKey: ["member-candidates", projectId, deferredSearch],
+    queryFn: ({ pageParam }) => workspaceApi.listMemberCandidates(projectId, { search: deferredSearch, cursor: pageParam, limit: 25 }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: open,
+    retry: false,
+  });
 
   const searchableMembers = useMemo(() => membersQuery.data?.pages.flatMap((page) => page.items) ?? [], [membersQuery.data]);
-  const memberById = useMemo(() => new Map([...memberPreview, ...searchableMembers].map((member) => [member.id, member])), [memberPreview, searchableMembers]);
+  const candidates = useMemo(() => candidatesQuery.data?.pages.flatMap((page) => page.items) ?? [], [candidatesQuery.data]);
+  const memberById = useMemo(() => new Map([...memberPreview, ...searchableMembers, ...candidates].map((member) => [member.id, member])), [memberPreview, searchableMembers, candidates]);
   const assignedMembers = assignedIds.map((id) => memberById.get(id) ?? { id, displayName: "Former member", email: "", color: "#737373" });
   const toggle = (userId: string) => onChange(assignedIds.includes(userId) ? assignedIds.filter((id) => id !== userId) : [...assignedIds, userId]);
+  const addMember = useMutation({
+    mutationFn: (userId: string) => workspaceApi.addProjectMember(projectId, userId),
+    onSuccess: (member) => {
+      void queryClient.invalidateQueries({ queryKey: ["members", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["member-candidates", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["bootstrap", projectId] });
+      onChange([...assignedIds, member.id]);
+      toast.success(`${member.displayName} added and assigned`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Project member could not be added"),
+  });
 
   return (
     <>
@@ -72,6 +94,8 @@ export function AssigneePicker({ projectId, assignedIds, memberPreview, disabled
             );
           })}
           {membersQuery.hasNextPage && <Button type="button" variant="ghost" size="sm" className="w-full" disabled={membersQuery.isFetchingNextPage} onClick={() => membersQuery.fetchNextPage()}>{membersQuery.isFetchingNextPage ? "Loading…" : "Load more"}</Button>}
+          {candidates.length > 0 && <div className="mt-3 border-t border-[var(--border-subtle)] pt-3"><p className="px-3 pb-1 text-[10px] font-semibold tracking-wide text-[var(--text-muted)] uppercase">Add from organization</p>{candidates.map((member) => <button key={member.id} type="button" disabled={disabled || addMember.isPending} onClick={() => addMember.mutate(member.id)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover)] focus-visible:outline-2 focus-visible:outline-[var(--focus)] disabled:opacity-50"><Avatar name={member.displayName} color={member.color} className="size-8" /><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{member.displayName}</span><span className="block truncate text-xs text-[var(--text-muted)]">{member.email}</span></span><span className="text-xs font-semibold text-[var(--brand)]">Add & assign</span></button>)}{candidatesQuery.hasNextPage && <Button type="button" variant="ghost" size="sm" className="w-full" disabled={candidatesQuery.isFetchingNextPage} onClick={() => candidatesQuery.fetchNextPage()}>{candidatesQuery.isFetchingNextPage ? "Loading…" : "Load more organization users"}</Button>}</div>}
+          {candidatesQuery.isError && !(candidatesQuery.error instanceof WorkspaceApiError && candidatesQuery.error.status === 403) && <p className="px-3 py-2 text-xs text-[var(--danger-text)]">Organization users could not be loaded.</p>}
         </div>
         <div className="mt-4 flex items-center justify-between border-t border-[var(--border-subtle)] pt-4"><span className="text-xs text-[var(--text-muted)]">{assignedIds.length} assigned</span><Button type="button" size="sm" onClick={() => setOpen(false)}>Done</Button></div>
       </Dialog>

@@ -101,14 +101,69 @@ export interface ActivityItem {
   occurredAt: string;
 }
 
+export type AgentRunStatus = "PENDING" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+export type AgentRunNodeStatus = "PENDING" | "READY" | "RUNNING" | "WAITING" | "SUCCEEDED" | "FAILED" | "SKIPPED" | "CANCELLED";
+
+export interface AgentRun {
+  id: string;
+  projectId: string;
+  taskId: string;
+  orchestrator: string;
+  externalRunId: string;
+  workflowName: string;
+  definitionId: string;
+  definitionVersion: string;
+  status: AgentRunStatus;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  nodes: AgentRunNode[];
+  edges: AgentRunEdge[];
+  events: AgentRunEvent[];
+}
+
+export interface AgentRunNode {
+  id: string;
+  externalNodeId: string;
+  agentName: string;
+  label: string;
+  nodeType: string;
+  status: AgentRunNodeStatus;
+  attempt: number;
+  positionX: number;
+  positionY: number;
+  output: Record<string, unknown>;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+  updatedAt: string;
+}
+
+export interface AgentRunEdge {
+  sourceNodeId: string;
+  targetNodeId: string;
+  label: string;
+}
+
+export interface AgentRunEvent {
+  sequence: number;
+  externalEventId: string;
+  nodeId?: string;
+  eventType: string;
+  message: string;
+  payload: Record<string, unknown>;
+  occurredAt: string;
+}
+
 export interface Notification {
   id: string;
   projectId: string;
   userId: string;
   taskId: string;
-  commentId: string;
+  commentId?: string;
   actorId: string;
-  type: "MENTION";
+  type: "MENTION" | "TASK_UPDATED";
   body: string;
   readAt?: string;
   createdAt: string;
@@ -198,8 +253,11 @@ export interface WorkspaceApi {
   createProject(name: string, description: string): Promise<Project>;
   bootstrap(projectId: string): Promise<WorkspaceBootstrap>;
   listMembers(projectId: string, filters?: MemberFilters): Promise<Page<Member>>;
+  listMemberCandidates(projectId: string, filters?: Pick<MemberFilters, "search" | "cursor" | "limit">): Promise<Page<Member>>;
+  addProjectMember(projectId: string, userId: string): Promise<Member>;
   listTasks(projectId: string, filters: TaskFilters): Promise<Page<Task>>;
   getTask(projectId: string, taskId: string): Promise<Task>;
+  getLatestAgentRun(projectId: string, taskId: string): Promise<AgentRun | null>;
   createTask(projectId: string, title: string): Promise<Task>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
   undoTask(projectId: string, taskId: string): Promise<Task>;

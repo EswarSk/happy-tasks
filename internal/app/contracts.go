@@ -165,6 +165,7 @@ type Store interface {
 	LockOwnerInvariant(context.Context, string) error
 	GetMembership(context.Context, string, string) (domain.Membership, error)
 	CountActiveOwners(context.Context, string) (int, error)
+	ListMemberCandidates(context.Context, string, MemberFilter) ([]domain.User, error)
 	CreateMembership(context.Context, string, CreateMembershipInput, string) (domain.Membership, error)
 	UpdateMembership(context.Context, string, string, domain.ProjectRole, domain.MembershipStatus, int64, string) (domain.Membership, error)
 	UnassignProjectMember(context.Context, string, string, string, string) ([]domain.AssignmentOperation, error)
@@ -200,6 +201,7 @@ type Store interface {
 	SetCommentReaction(context.Context, string, string, string, string, string) (domain.CommentReaction, error)
 	RemoveCommentReaction(context.Context, string, string, string, string) (domain.CommentReaction, error)
 	CreateMentionNotifications(context.Context, string, string, string, string, string) ([]domain.Notification, error)
+	CreateTaskUpdateNotifications(context.Context, string, string, string, string, []string) error
 	MarkNotificationRead(context.Context, string, string, string) (domain.Notification, error)
 	AppendEvent(context.Context, EventDraft) (domain.Event, error)
 	CreateAttachment(context.Context, CreateAttachmentInput) (domain.Attachment, error)
@@ -213,6 +215,7 @@ type Database interface {
 	Bootstrap(context.Context, string, string, TaskFilter) (Bootstrap, error)
 	ListTasks(context.Context, string, TaskFilter) ([]domain.Task, error)
 	GetTask(context.Context, string, string) (domain.Task, error)
+	GetLatestAgentRun(context.Context, string, string) (domain.AgentRun, error)
 	ListComments(context.Context, string, string, string, CommentFilter) ([]domain.Comment, error)
 	ListMembers(context.Context, string, MemberFilter) ([]domain.Membership, error)
 	ListAssignmentOperations(context.Context, string, string, AssignmentFilter) ([]domain.AssignmentOperation, error)

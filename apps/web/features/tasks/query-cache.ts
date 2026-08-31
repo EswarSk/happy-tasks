@@ -57,8 +57,16 @@ export function removeTaskFromCache(queryClient: QueryClient, projectId: string,
 }
 
 export function incrementTaskCommentCount(queryClient: QueryClient, projectId: string, taskId: string) {
+  adjustTaskCommentCount(queryClient, projectId, taskId, 1);
+}
+
+export function decrementTaskCommentCount(queryClient: QueryClient, projectId: string, taskId: string) {
+  adjustTaskCommentCount(queryClient, projectId, taskId, -1);
+}
+
+function adjustTaskCommentCount(queryClient: QueryClient, projectId: string, taskId: string, delta: number) {
   queryClient.setQueryData<Task>(["task", projectId, taskId], (current) =>
-    current ? { ...current, commentCount: current.commentCount + 1 } : current,
+    current ? { ...current, commentCount: Math.max(0, current.commentCount + delta) } : current,
   );
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current) return current;
@@ -67,7 +75,7 @@ export function incrementTaskCommentCount(queryClient: QueryClient, projectId: s
       pages: current.pages.map((page) => ({
         ...page,
         items: page.items.map((task) =>
-          task.id === taskId ? { ...task, commentCount: task.commentCount + 1 } : task,
+          task.id === taskId ? { ...task, commentCount: Math.max(0, task.commentCount + delta) } : task,
         ),
       })),
     };

@@ -8,12 +8,13 @@ import { toast } from "sonner";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
-import { incrementTaskCommentCount } from "@/features/tasks/query-cache";
+import { decrementTaskCommentCount, incrementTaskCommentCount } from "@/features/tasks/query-cache";
 import type { Comment, CommentReactionType, Member, Page } from "@/lib/api";
 import { dataSource, workspaceApi } from "@/lib/api";
 import { cn, relativeTime } from "@/lib/utils";
 import { buildCommentTree } from "./comment-tree";
 import type { CommentNode } from "./comment-tree";
+import { insertMention, mentionAtCursor, type MentionMatch } from "./mentions";
 
 interface CommentThreadProps {
   projectId: string;
@@ -85,6 +86,8 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
   const [replyToId, setReplyToId] = useState<string>();
+  const [mention, setMention] = useState<MentionMatch>();
+  const [mentionIndex, setMentionIndex] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const commentsKey = ["comments", projectId, taskId];
   const query = useInfiniteQuery({
@@ -98,6 +101,14 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
   const membersById = useMemo(() => new Map(members.map((member) => [member.id, member])), [members]);
   const replyTarget = replyToId ? comments.find((comment) => comment.id === replyToId) : undefined;
   const replyAuthor = replyTarget ? membersById.get(replyTarget.authorId)?.displayName ?? "Unknown" : undefined;
+  const mentionCandidates = useMemo(() => {
+    if (!mention) return [];
+    const query = mention.query.toLowerCase();
+    return members.filter((member) => {
+      const handle = member.email.split("@")[0] ?? "";
+      return member.displayName.toLowerCase().includes(query) || handle.toLowerCase().includes(query);
+    }).slice(0, 6);
+  }, [members, mention]);
   const reactionMutation = useMutation({
     mutationFn: ({ comment, type }: { comment: Comment; type: CommentReactionType }) => {
       const current = comment.reactions?.find((item) => item.type === type);
@@ -153,10 +164,12 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
         pages[0] = { ...pages[0], items: [optimistic, ...pages[0].items], totalCount: pages[0].totalCount + 1 };
         return { ...current, pages };
       });
+      incrementTaskCommentCount(queryClient, projectId, taskId);
       const pendingDraft = draft;
       const pendingReplyToId = replyToId;
       setDraft("");
       setReplyToId(undefined);
+      setMention(undefined);
       return { draft: pendingDraft, replyToId: pendingReplyToId };
     },
     onSuccess: (comment) => {
@@ -164,7 +177,6 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
         ...current,
         pages: current.pages.map((page) => ({ ...page, items: page.items.map((item) => item.id === comment.id ? comment : item) })),
       } : current);
-      incrementTaskCommentCount(queryClient, projectId, taskId);
     },
     onError: (_error, variables, context) => {
       setDraft(context?.draft ?? variables.body);
@@ -173,6 +185,9 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
         ...current,
         pages: current.pages.map((page) => ({ ...page, items: page.items.map((item) => item.id === variables.id ? { ...item, syncState: "failed" } : item) })),
       } : current);
+      decrementTaskCommentCount(queryClient, projectId, taskId);
+      void queryClient.invalidateQueries({ queryKey: ["task", projectId, taskId] });
+      void queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
     },
   });
 
@@ -185,6 +200,18 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
   const startReply = (comment: Comment) => {
     setReplyToId(comment.id);
     window.requestAnimationFrame(() => composerRef.current?.focus());
+  };
+
+  const selectMention = (member: Member) => {
+    if (!mention) return;
+    const handle = member.email.split("@")[0] ?? member.displayName.replaceAll(" ", "");
+    const next = insertMention(draft, mention, handle);
+    setDraft(next.value);
+    setMention(undefined);
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
   };
 
   return (
@@ -206,14 +233,46 @@ export function CommentThread({ projectId, taskId, members }: CommentThreadProps
             <button type="button" className="shrink-0 rounded-full p-1 text-[var(--text-muted)] hover:bg-[var(--secondary-hover)] hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]" onClick={() => setReplyToId(undefined)} aria-label="Cancel reply"><X className="size-3.5" /></button>
           </div>
         )}
-        <div className="rounded-[28px] border border-[var(--border)] bg-[var(--muted)] p-3 transition-colors focus-within:border-[var(--text-secondary)] focus-within:ring-2 focus-within:ring-[var(--focus-soft)]">
+        <div className="relative rounded-[28px] border border-[var(--border)] bg-[var(--muted)] p-3 transition-colors focus-within:border-[var(--text-secondary)] focus-within:ring-2 focus-within:ring-[var(--focus-soft)]">
+          {mention && (
+            <div id="comment-mention-options" role="listbox" aria-label="Project members" className="absolute right-3 bottom-[calc(100%-4px)] left-3 z-20 max-h-56 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl">
+              {mentionCandidates.map((member, index) => {
+                const handle = member.email.split("@")[0] ?? "";
+                return <button key={member.id} type="button" role="option" aria-selected={index === mentionIndex} onMouseDown={(event) => event.preventDefault()} onClick={() => selectMention(member)} className={cn("flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left", index === mentionIndex ? "bg-[var(--hover)]" : "hover:bg-[var(--hover)]")}><Avatar name={member.displayName} color={member.color} /><span className="min-w-0"><span className="block truncate text-xs font-semibold">{member.displayName}</span><span className="block truncate text-[11px] text-[var(--text-muted)]">@{handle}</span></span></button>;
+              })}
+              {mentionCandidates.length === 0 && <p className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No matching project members</p>}
+            </div>
+          )}
           <Textarea
             ref={composerRef}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") send(); }}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setMention(mentionAtCursor(event.target.value, event.target.selectionStart));
+              setMentionIndex(0);
+            }}
+            onSelect={(event) => setMention(mentionAtCursor(event.currentTarget.value, event.currentTarget.selectionStart))}
+            onKeyDown={(event) => {
+              if (mention && mentionCandidates.length > 0) {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionIndex((current) => (current + (event.key === "ArrowDown" ? 1 : mentionCandidates.length - 1)) % mentionCandidates.length);
+                  return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  selectMention(mentionCandidates[mentionIndex] ?? mentionCandidates[0]);
+                  return;
+                }
+              }
+              if (event.key === "Escape" && mention) { event.preventDefault(); setMention(undefined); return; }
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") send();
+            }}
             placeholder={replyTarget ? `Reply to ${replyAuthor}…` : "Write a comment…"}
             aria-label="Comment"
+            aria-autocomplete="list"
+            aria-controls={mention ? "comment-mention-options" : undefined}
+            aria-expanded={Boolean(mention)}
             rows={2}
             className="min-h-20 max-h-40 overflow-y-auto rounded-2xl border-0 bg-transparent px-3 py-2 text-sm leading-6 shadow-none focus:border-0 focus:bg-transparent focus:ring-0"
           />

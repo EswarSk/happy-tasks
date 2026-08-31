@@ -272,6 +272,13 @@ func (s *Service) GetTask(ctx context.Context, actorID, projectID, taskID string
 	return s.db.GetTask(ctx, projectID, taskID)
 }
 
+func (s *Service) GetLatestAgentRun(ctx context.Context, actorID, projectID, taskID string) (domain.AgentRun, error) {
+	if _, err := s.GetTask(ctx, actorID, projectID, taskID); err != nil {
+		return domain.AgentRun{}, err
+	}
+	return s.db.GetLatestAgentRun(ctx, projectID, taskID)
+}
+
 func (s *Service) CanMutateProject(ctx context.Context, actorID, projectID string) (bool, error) {
 	allowed := false
 	err := s.db.WithinTx(ctx, func(store Store) error {
@@ -498,7 +505,7 @@ func (s *Service) UpdateTask(ctx context.Context, meta MutationMeta, projectID, 
 		if err := requireMembers(ctx, store, projectID, next.AssigneeIDs); err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		updated, err := applyTaskUpdate(ctx, store, projectID, taskID, current.Version, input, meta)
+		updated, err := applyTaskUpdate(ctx, store, projectID, current, input, meta)
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
@@ -564,7 +571,7 @@ func (s *Service) replayTaskOperation(ctx context.Context, meta MutationMeta, pr
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
-		updated, err := applyTaskUpdate(ctx, store, projectID, taskID, current.Version, input, meta)
+		updated, err := applyTaskUpdate(ctx, store, projectID, current, input, meta)
 		if err != nil {
 			return mutationValue[domain.Task]{}, err
 		}
@@ -579,18 +586,39 @@ func (s *Service) replayTaskOperation(ctx context.Context, meta MutationMeta, pr
 	})
 }
 
-func applyTaskUpdate(ctx context.Context, store Store, projectID, taskID string, expectedVersion int64, input UpdateTaskInput, meta MutationMeta) (domain.Task, error) {
-	updated, err := store.UpdateTask(ctx, projectID, taskID, expectedVersion, input)
+func applyTaskUpdate(ctx context.Context, store Store, projectID string, current domain.Task, input UpdateTaskInput, meta MutationMeta) (domain.Task, error) {
+	updated, err := store.UpdateTask(ctx, projectID, current.ID, current.Version, input)
 	if err != nil {
 		return domain.Task{}, err
 	}
 	if input.AssigneeIDs != nil {
-		if _, err := store.ReplaceTaskAssignees(ctx, projectID, taskID, *input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
+		if _, err := store.ReplaceTaskAssignees(ctx, projectID, current.ID, *input.AssigneeIDs, meta.ActorID, meta.RequestID); err != nil {
 			return domain.Task{}, err
 		}
-		updated, err = store.GetTask(ctx, projectID, taskID)
+		updated, err = store.GetTask(ctx, projectID, current.ID)
+		if err != nil {
+			return domain.Task{}, err
+		}
 	}
-	return updated, err
+	if err := store.CreateTaskUpdateNotifications(ctx, projectID, current.ID, meta.ActorID, meta.RequestID, taskUpdateRecipientIDs(current.AssigneeIDs, updated.AssigneeIDs, meta.ActorID)); err != nil {
+		return domain.Task{}, err
+	}
+	return updated, nil
+}
+
+func taskUpdateRecipientIDs(before, after []string, actorID string) []string {
+	recipients := make(map[string]struct{}, len(before)+len(after))
+	for _, userID := range append(before, after...) {
+		if userID != actorID {
+			recipients[userID] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(recipients))
+	for userID := range recipients {
+		result = append(result, userID)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func changedTaskFields(input UpdateTaskInput) []string {
@@ -992,6 +1020,35 @@ func (s *Service) ListMembers(ctx context.Context, actorID, projectID string, fi
 		page.Items = items[:requested]
 		last := page.Items[len(page.Items)-1]
 		page.NextCursor = EncodeMemberCursor(strings.ToLower(last.User.DisplayName), last.ID)
+	}
+	return page, nil
+}
+
+func (s *Service) ListMemberCandidates(ctx context.Context, actorID, projectID string, filter MemberFilter) (domain.Page[domain.User], error) {
+	filter.Search = strings.TrimSpace(filter.Search)
+	if len(filter.Search) > 200 {
+		return domain.Page[domain.User]{}, domain.Validation("VALIDATION_ERROR", "Member search must not exceed 200 characters.", map[string]any{"field": "q"})
+	}
+	filter.PageSize = normalizePageSize(filter.PageSize)
+	requested := filter.PageSize
+	filter.PageSize++
+	var items []domain.User
+	err := s.db.WithinTx(ctx, func(store Store) error {
+		if _, err := requireMembershipManager(ctx, store, projectID, actorID); err != nil {
+			return err
+		}
+		var err error
+		items, err = store.ListMemberCandidates(ctx, projectID, filter)
+		return err
+	})
+	if err != nil {
+		return domain.Page[domain.User]{}, err
+	}
+	page := domain.Page[domain.User]{Items: items}
+	if len(items) > requested {
+		page.Items = items[:requested]
+		last := page.Items[len(page.Items)-1]
+		page.NextCursor = EncodeMemberCursor(strings.ToLower(last.DisplayName), last.ID)
 	}
 	return page, nil
 }

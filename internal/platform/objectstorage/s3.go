@@ -5,36 +5,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-type Config struct {
-	Bucket       string
-	Region       string
-	Endpoint     string
-	CreateBucket bool
-}
-
 type S3 struct {
 	client *s3.Client
 	bucket string
 }
 
-type Object struct {
-	Body         io.ReadCloser
-	Length       int64
-	LastModified time.Time
-}
+var _ Store = (*S3)(nil)
 
-func Open(ctx context.Context, config Config) (*S3, error) {
-	config.Bucket = strings.TrimSpace(config.Bucket)
-	if config.Bucket == "" {
-		return nil, fmt.Errorf("S3_BUCKET is required")
-	}
+func openS3(ctx context.Context, config Config) (*S3, error) {
 	if config.Region == "" {
 		config.Region = "us-east-1"
 	}

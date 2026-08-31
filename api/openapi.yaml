@@ -11,6 +11,7 @@ tags:
   - name: Projects
   - name: Memberships
   - name: Tasks
+  - name: Agent runs
   - name: Dependencies
   - name: Comments
   - name: Notifications
@@ -260,6 +261,27 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Membership"}
+        default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/members/candidates:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Memberships]
+      operationId: listProjectMemberCandidates
+      description: Lists active users in the project's organization who are not project members. Restricted to project owners and admins.
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - name: q
+          in: query
+          schema: {type: string, maxLength: 200}
+      responses:
+        "200":
+          description: Eligible organization users ordered by display name and stable user ID.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UserPage"}
         default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/members/{membershipId}:
     parameters:
@@ -592,6 +614,22 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/Attachment"}
         default: {$ref: "#/components/responses/Error"}
+  /v1/projects/{projectId}/tasks/{taskId}/agent-runs/latest:
+    parameters:
+      - {$ref: "#/components/parameters/ProjectId"}
+      - {$ref: "#/components/parameters/TaskId"}
+      - {$ref: "#/components/parameters/ActorId"}
+    get:
+      tags: [Agent runs]
+      operationId: getLatestAgentRun
+      description: Returns the latest persisted execution graph and its most recent 200 ordered audit events. The external orchestrator remains authoritative for execution.
+      responses:
+        "200":
+          description: Latest runtime graph linked to this task.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AgentRun"}
+        default: {$ref: "#/components/responses/Error"}
   /v1/projects/{projectId}/tasks/{taskId}/attachments/{attachmentId}:
     parameters:
       - {$ref: "#/components/parameters/ProjectId"}
@@ -679,7 +717,7 @@ paths:
     get:
       tags: [Notifications]
       operationId: listNotifications
-      description: Lists mention notifications for the current project member, newest first.
+      description: Lists task-update and mention notifications for the current project member, newest first.
       parameters:
         - {$ref: "#/components/parameters/Cursor"}
         - {$ref: "#/components/parameters/Limit"}
@@ -688,7 +726,7 @@ paths:
           schema: {type: boolean, default: true}
       responses:
         "200":
-          description: Mention notifications.
+          description: Task-update and mention notifications.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/NotificationPage"}
@@ -806,6 +844,14 @@ components:
       required: [user]
       properties:
         user: {$ref: "#/components/schemas/User"}
+    UserPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: "#/components/schemas/User"}
+        nextCursor: {type: string}
     TaskStatus:
       type: string
       enum: [TODO, IN_PROGRESS, BLOCKED, DONE]
@@ -1092,6 +1138,68 @@ components:
         actorId: {type: string, format: uuid}
         description: {type: string}
         occurredAt: {type: string, format: date-time}
+    AgentRun:
+      type: object
+      required: [id, projectId, taskId, orchestrator, externalRunId, workflowName, definitionId, definitionVersion, status, createdAt, updatedAt, nodes, edges, events]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        orchestrator: {type: string}
+        externalRunId: {type: string}
+        workflowName: {type: string}
+        definitionId: {type: string}
+        definitionVersion: {type: string}
+        status: {type: string, enum: [PENDING, RUNNING, WAITING, SUCCEEDED, FAILED, CANCELLED]}
+        startedAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        nodes:
+          type: array
+          items: {$ref: "#/components/schemas/AgentRunNode"}
+        edges:
+          type: array
+          items: {$ref: "#/components/schemas/AgentRunEdge"}
+        events:
+          type: array
+          items: {$ref: "#/components/schemas/AgentRunEvent"}
+    AgentRunNode:
+      type: object
+      required: [id, externalNodeId, agentName, label, nodeType, status, attempt, positionX, positionY, output, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        externalNodeId: {type: string}
+        agentName: {type: string}
+        label: {type: string}
+        nodeType: {type: string}
+        status: {type: string, enum: [PENDING, READY, RUNNING, WAITING, SUCCEEDED, FAILED, SKIPPED, CANCELLED]}
+        attempt: {type: integer, minimum: 1}
+        positionX: {type: integer}
+        positionY: {type: integer}
+        output: {type: object, additionalProperties: true}
+        error: {type: string}
+        startedAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    AgentRunEdge:
+      type: object
+      required: [sourceNodeId, targetNodeId, label]
+      properties:
+        sourceNodeId: {type: string, format: uuid}
+        targetNodeId: {type: string, format: uuid}
+        label: {type: string}
+    AgentRunEvent:
+      type: object
+      required: [sequence, externalEventId, eventType, message, payload, occurredAt]
+      properties:
+        sequence: {type: integer, format: int64, minimum: 1}
+        externalEventId: {type: string}
+        nodeId: {type: string, format: uuid}
+        eventType: {type: string}
+        message: {type: string}
+        payload: {type: object, additionalProperties: true}
+        occurredAt: {type: string, format: date-time}
     ActivityPage:
       type: object
       required: [items]
@@ -1102,7 +1210,7 @@ components:
         nextCursor: {type: string}
     Notification:
       type: object
-      required: [id, projectId, userId, taskId, commentId, actorId, type, body, createdAt]
+      required: [id, projectId, userId, taskId, actorId, type, body, createdAt]
       properties:
         id: {type: string, format: uuid}
         projectId: {type: string, format: uuid}
@@ -1110,7 +1218,7 @@ components:
         taskId: {type: string, format: uuid}
         commentId: {type: string, format: uuid}
         actorId: {type: string, format: uuid}
-        type: {type: string, enum: [MENTION]}
+        type: {type: string, enum: [MENTION, TASK_UPDATED]}
         body: {type: string}
         readAt: {type: string, format: date-time}
         createdAt: {type: string, format: date-time}

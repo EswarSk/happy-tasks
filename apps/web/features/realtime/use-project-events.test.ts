@@ -78,8 +78,24 @@ describe("project event reconciliation", () => {
     expect(queryClient.getQueryState(["tasks", projectId])?.isInvalidated).toBe(true);
   });
 
+  it("refreshes notifications when a task changes", () => {
+	const queryClient = queryClientWithTask();
+	queryClient.setQueryData(["notifications", projectId], { items: [] });
+
+	applyEvent(queryClient, {
+	  projectId,
+	  sequence: 4,
+	  type: "task.updated",
+	  aggregateId: task.id,
+	  payload: { task: { ...task, version: 2 } },
+	});
+
+	expect(queryClient.getQueryState(["notifications", projectId])?.isInvalidated).toBe(true);
+  });
+
   it("does not double-count a comment already inserted optimistically", () => {
     const queryClient = queryClientWithTask();
+    queryClient.setQueryData(["task", projectId, task.id], { ...task, commentCount: 1 });
     queryClient.setQueryData<InfiniteData<Page<Comment>>>(["comments", projectId, task.id], {
       pages: [{
         items: [{ id: "comment-1", projectId, taskId: task.id, authorId: "user-1", body: "Pending", createdAt: "2026-08-27T00:01:00.000Z", version: 0 }],
@@ -97,6 +113,6 @@ describe("project event reconciliation", () => {
       payload: { id: "comment-1", taskId: task.id, author: { id: "user-1" }, body: "Pending", version: 1 },
     });
 
-    expect(queryClient.getQueryData<Task>(["task", projectId, task.id])?.commentCount).toBe(0);
+    expect(queryClient.getQueryData<Task>(["task", projectId, task.id])?.commentCount).toBe(1);
   });
 });

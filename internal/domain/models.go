@@ -205,12 +205,64 @@ type ActivityItem struct {
 	OccurredAt    time.Time `json:"occurredAt"`
 }
 
+type AgentRun struct {
+	ID                string          `json:"id"`
+	ProjectID         string          `json:"projectId"`
+	TaskID            string          `json:"taskId"`
+	Orchestrator      string          `json:"orchestrator"`
+	ExternalRunID     string          `json:"externalRunId"`
+	WorkflowName      string          `json:"workflowName"`
+	DefinitionID      string          `json:"definitionId"`
+	DefinitionVersion string          `json:"definitionVersion"`
+	Status            string          `json:"status"`
+	StartedAt         *time.Time      `json:"startedAt,omitempty"`
+	CompletedAt       *time.Time      `json:"completedAt,omitempty"`
+	CreatedAt         time.Time       `json:"createdAt"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
+	Nodes             []AgentRunNode  `json:"nodes"`
+	Edges             []AgentRunEdge  `json:"edges"`
+	Events            []AgentRunEvent `json:"events"`
+}
+
+type AgentRunNode struct {
+	ID             string         `json:"id"`
+	ExternalNodeID string         `json:"externalNodeId"`
+	AgentName      string         `json:"agentName"`
+	Label          string         `json:"label"`
+	NodeType       string         `json:"nodeType"`
+	Status         string         `json:"status"`
+	Attempt        int            `json:"attempt"`
+	PositionX      int            `json:"positionX"`
+	PositionY      int            `json:"positionY"`
+	Output         map[string]any `json:"output"`
+	Error          *string        `json:"error,omitempty"`
+	StartedAt      *time.Time     `json:"startedAt,omitempty"`
+	CompletedAt    *time.Time     `json:"completedAt,omitempty"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+}
+
+type AgentRunEdge struct {
+	SourceNodeID string `json:"sourceNodeId"`
+	TargetNodeID string `json:"targetNodeId"`
+	Label        string `json:"label"`
+}
+
+type AgentRunEvent struct {
+	Sequence        int64          `json:"sequence"`
+	ExternalEventID string         `json:"externalEventId"`
+	NodeID          *string        `json:"nodeId,omitempty"`
+	EventType       string         `json:"eventType"`
+	Message         string         `json:"message"`
+	Payload         map[string]any `json:"payload"`
+	OccurredAt      time.Time      `json:"occurredAt"`
+}
+
 type Notification struct {
 	ID        string     `json:"id"`
 	ProjectID string     `json:"projectId"`
 	UserID    string     `json:"userId"`
 	TaskID    string     `json:"taskId"`
-	CommentID string     `json:"commentId"`
+	CommentID *string    `json:"commentId,omitempty"`
 	ActorID   string     `json:"actorId"`
 	Type      string     `json:"type"`
 	Body      string     `json:"body"`

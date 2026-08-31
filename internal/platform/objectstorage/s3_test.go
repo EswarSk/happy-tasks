@@ -10,6 +10,12 @@ import (
 	"testing"
 )
 
+func TestOpenRequiresBucket(t *testing.T) {
+	if _, err := Open(context.Background(), Config{}); err == nil {
+		t.Fatal("expected error for empty bucket")
+	}
+}
+
 func TestS3ObjectLifecycle(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")

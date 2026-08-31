@@ -1,7 +1,7 @@
 import { QueryClient, type InfiniteData } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { Page, Task } from "@/lib/api";
-import { prependTaskToCache } from "./query-cache";
+import { decrementTaskCommentCount, incrementTaskCommentCount, prependTaskToCache } from "./query-cache";
 
 const task: Task = {
   id: "task-1",
@@ -36,5 +36,17 @@ describe("prependTaskToCache", () => {
     expect(result?.pages[0]?.items.map((item) => item.id)).toEqual([task.id]);
     expect(result?.pages[0]?.totalCount).toBe(1);
     expect(queryClient.getQueryData<Task>(["task", task.projectId, task.id])?.id).toBe(task.id);
+  });
+});
+
+describe("task comment count", () => {
+  it("increments optimistically and rolls back once", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(["task", task.projectId, task.id], task);
+
+    incrementTaskCommentCount(queryClient, task.projectId, task.id);
+    decrementTaskCommentCount(queryClient, task.projectId, task.id);
+
+    expect(queryClient.getQueryData<Task>(["task", task.projectId, task.id])?.commentCount).toBe(0);
   });
 });

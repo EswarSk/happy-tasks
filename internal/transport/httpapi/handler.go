@@ -43,7 +43,7 @@ type Handler struct {
 	rateLimiter        *rateLimiter
 	authRequired       bool
 	secureCookies      bool
-	attachments        *objectstorage.S3
+	attachments        objectstorage.Store
 	realtime           *messaging.Redis
 	documentProducer   *messaging.Producer
 }
@@ -51,7 +51,7 @@ type Handler struct {
 type Config struct {
 	AuthRequired     bool
 	SecureCookies    bool
-	Attachments      *objectstorage.S3
+	Attachments      objectstorage.Store
 	Realtime         *messaging.Redis
 	DocumentProducer *messaging.Producer
 }
@@ -98,6 +98,7 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 			r.Get("/notifications", h.notifications)
 			r.Post("/notifications/{notificationId}/read", h.markNotificationRead)
 			r.Get("/members", h.listMembers)
+			r.Get("/members/candidates", h.listMemberCandidates)
 			r.Post("/members", h.createMembership)
 			r.Patch("/members/{membershipId}", h.updateMembership)
 			r.Delete("/members/{membershipId}", h.removeMembership)
@@ -105,6 +106,7 @@ func New(service *app.Service, hub *syncstream.Hub, defaultActorID string, allow
 			r.Post("/tasks", h.createTask)
 			r.Route("/tasks/{taskId}", func(r chi.Router) {
 				r.Get("/", h.getTask)
+				r.Get("/agent-runs/latest", h.getLatestAgentRun)
 				r.Patch("/", h.updateTask)
 				r.Delete("/", h.deleteTask)
 				r.Post("/undo", h.undoTask)
@@ -380,6 +382,28 @@ func (h *Handler) listMembers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
+func (h *Handler) listMemberCandidates(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "projectId")
+	if !ok {
+		return
+	}
+	filter := app.MemberFilter{Search: strings.TrimSpace(r.URL.Query().Get("q")), PageSize: intQuery(r, "limit", 50)}
+	if value := r.URL.Query().Get("cursor"); value != "" {
+		cursor, err := app.DecodeMemberCursor(value)
+		if err != nil {
+			h.validationError(w, r, "cursor", "invalid cursor")
+			return
+		}
+		filter.Cursor = cursor
+	}
+	page, err := h.service.ListMemberCandidates(r.Context(), h.actorID(r), projectID, filter)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
 func (h *Handler) createMembership(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathUUID(w, r, "projectId")
 	if !ok {
@@ -521,6 +545,19 @@ func (h *Handler) getTask(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", etag(task.Version))
 	writeJSON(w, http.StatusOK, task)
+}
+
+func (h *Handler) getLatestAgentRun(w http.ResponseWriter, r *http.Request) {
+	projectID, taskID, ok := taskPath(w, r)
+	if !ok {
+		return
+	}
+	run, err := h.service.GetLatestAgentRun(r.Context(), h.actorID(r), projectID, taskID)
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request) {

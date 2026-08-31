@@ -9,6 +9,28 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AgentRunStatus.
+const (
+	AgentRunStatusCANCELLED AgentRunStatus = "CANCELLED"
+	AgentRunStatusFAILED    AgentRunStatus = "FAILED"
+	AgentRunStatusPENDING   AgentRunStatus = "PENDING"
+	AgentRunStatusRUNNING   AgentRunStatus = "RUNNING"
+	AgentRunStatusSUCCEEDED AgentRunStatus = "SUCCEEDED"
+	AgentRunStatusWAITING   AgentRunStatus = "WAITING"
+)
+
+// Defines values for AgentRunNodeStatus.
+const (
+	AgentRunNodeStatusCANCELLED AgentRunNodeStatus = "CANCELLED"
+	AgentRunNodeStatusFAILED    AgentRunNodeStatus = "FAILED"
+	AgentRunNodeStatusPENDING   AgentRunNodeStatus = "PENDING"
+	AgentRunNodeStatusREADY     AgentRunNodeStatus = "READY"
+	AgentRunNodeStatusRUNNING   AgentRunNodeStatus = "RUNNING"
+	AgentRunNodeStatusSKIPPED   AgentRunNodeStatus = "SKIPPED"
+	AgentRunNodeStatusSUCCEEDED AgentRunNodeStatus = "SUCCEEDED"
+	AgentRunNodeStatusWAITING   AgentRunNodeStatus = "WAITING"
+)
+
 // Defines values for AssignmentOperationOperation.
 const (
 	ASSIGNED   AssignmentOperationOperation = "ASSIGNED"
@@ -32,7 +54,8 @@ const (
 
 // Defines values for NotificationType.
 const (
-	MENTION NotificationType = "MENTION"
+	MENTION     NotificationType = "MENTION"
+	TASKUPDATED NotificationType = "TASK_UPDATED"
 )
 
 // Defines values for ProjectRole.
@@ -91,6 +114,68 @@ type ActivityPage struct {
 	Items      []ActivityItem `json:"items"`
 	NextCursor *string        `json:"nextCursor,omitempty"`
 }
+
+// AgentRun defines model for AgentRun.
+type AgentRun struct {
+	CompletedAt       *time.Time         `json:"completedAt,omitempty"`
+	CreatedAt         time.Time          `json:"createdAt"`
+	DefinitionId      string             `json:"definitionId"`
+	DefinitionVersion string             `json:"definitionVersion"`
+	Edges             []AgentRunEdge     `json:"edges"`
+	Events            []AgentRunEvent    `json:"events"`
+	ExternalRunId     string             `json:"externalRunId"`
+	Id                openapi_types.UUID `json:"id"`
+	Nodes             []AgentRunNode     `json:"nodes"`
+	Orchestrator      string             `json:"orchestrator"`
+	ProjectId         openapi_types.UUID `json:"projectId"`
+	StartedAt         *time.Time         `json:"startedAt,omitempty"`
+	Status            AgentRunStatus     `json:"status"`
+	TaskId            openapi_types.UUID `json:"taskId"`
+	UpdatedAt         time.Time          `json:"updatedAt"`
+	WorkflowName      string             `json:"workflowName"`
+}
+
+// AgentRunStatus defines model for AgentRun.Status.
+type AgentRunStatus string
+
+// AgentRunEdge defines model for AgentRunEdge.
+type AgentRunEdge struct {
+	Label        string             `json:"label"`
+	SourceNodeId openapi_types.UUID `json:"sourceNodeId"`
+	TargetNodeId openapi_types.UUID `json:"targetNodeId"`
+}
+
+// AgentRunEvent defines model for AgentRunEvent.
+type AgentRunEvent struct {
+	EventType       string                 `json:"eventType"`
+	ExternalEventId string                 `json:"externalEventId"`
+	Message         string                 `json:"message"`
+	NodeId          *openapi_types.UUID    `json:"nodeId,omitempty"`
+	OccurredAt      time.Time              `json:"occurredAt"`
+	Payload         map[string]interface{} `json:"payload"`
+	Sequence        int64                  `json:"sequence"`
+}
+
+// AgentRunNode defines model for AgentRunNode.
+type AgentRunNode struct {
+	AgentName      string                 `json:"agentName"`
+	Attempt        int                    `json:"attempt"`
+	CompletedAt    *time.Time             `json:"completedAt,omitempty"`
+	Error          *string                `json:"error,omitempty"`
+	ExternalNodeId string                 `json:"externalNodeId"`
+	Id             openapi_types.UUID     `json:"id"`
+	Label          string                 `json:"label"`
+	NodeType       string                 `json:"nodeType"`
+	Output         map[string]interface{} `json:"output"`
+	PositionX      int                    `json:"positionX"`
+	PositionY      int                    `json:"positionY"`
+	StartedAt      *time.Time             `json:"startedAt,omitempty"`
+	Status         AgentRunNodeStatus     `json:"status"`
+	UpdatedAt      time.Time              `json:"updatedAt"`
+}
+
+// AgentRunNodeStatus defines model for AgentRunNode.Status.
+type AgentRunNodeStatus string
 
 // AssignmentOperation defines model for AssignmentOperation.
 type AssignmentOperation struct {
@@ -280,16 +365,16 @@ type MembershipStatus string
 
 // Notification defines model for Notification.
 type Notification struct {
-	ActorId   openapi_types.UUID `json:"actorId"`
-	Body      string             `json:"body"`
-	CommentId openapi_types.UUID `json:"commentId"`
-	CreatedAt time.Time          `json:"createdAt"`
-	Id        openapi_types.UUID `json:"id"`
-	ProjectId openapi_types.UUID `json:"projectId"`
-	ReadAt    *time.Time         `json:"readAt,omitempty"`
-	TaskId    openapi_types.UUID `json:"taskId"`
-	Type      NotificationType   `json:"type"`
-	UserId    openapi_types.UUID `json:"userId"`
+	ActorId   openapi_types.UUID  `json:"actorId"`
+	Body      string              `json:"body"`
+	CommentId *openapi_types.UUID `json:"commentId,omitempty"`
+	CreatedAt time.Time           `json:"createdAt"`
+	Id        openapi_types.UUID  `json:"id"`
+	ProjectId openapi_types.UUID  `json:"projectId"`
+	ReadAt    *time.Time          `json:"readAt,omitempty"`
+	TaskId    openapi_types.UUID  `json:"taskId"`
+	Type      NotificationType    `json:"type"`
+	UserId    openapi_types.UUID  `json:"userId"`
 }
 
 // NotificationType defines model for Notification.Type.
@@ -400,6 +485,12 @@ type User struct {
 
 // UserStatus defines model for User.Status.
 type UserStatus string
+
+// UserPage defines model for UserPage.
+type UserPage struct {
+	Items      []User  `json:"items"`
+	NextCursor *string `json:"nextCursor,omitempty"`
+}
 
 // ActorId defines model for ActorId.
 type ActorId = openapi_types.UUID
@@ -515,6 +606,16 @@ type CreateProjectMembershipParams struct {
 	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
 }
 
+// ListProjectMemberCandidatesParams defines parameters for ListProjectMemberCandidates.
+type ListProjectMemberCandidatesParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	Q      *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// XActorID Development identity. Defaults to the seeded demo actor locally.
+	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
+}
+
 // RemoveProjectMembershipParams defines parameters for RemoveProjectMembership.
 type RemoveProjectMembershipParams struct {
 	// IfMatch Current integer entity version, optionally quoted as an ETag.
@@ -611,6 +712,12 @@ type UpdateTaskParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 	XRequestID     *RequestId     `json:"X-Request-ID,omitempty"`
 
+	// XActorID Development identity. Defaults to the seeded demo actor locally.
+	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
+}
+
+// GetLatestAgentRunParams defines parameters for GetLatestAgentRun.
+type GetLatestAgentRunParams struct {
 	// XActorID Development identity. Defaults to the seeded demo actor locally.
 	XActorID *ActorId `json:"X-Actor-ID,omitempty"`
 }

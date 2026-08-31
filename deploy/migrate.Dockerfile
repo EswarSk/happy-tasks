@@ -7,5 +7,6 @@ FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/goose /usr/local/bin/goose
+COPY db/migrations /migrations
 
 ENTRYPOINT ["/usr/local/bin/goose"]

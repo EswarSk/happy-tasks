@@ -2,43 +2,43 @@
 
 :root {
   color-scheme: light;
-  --background: #ffffff;
+  --background: #f8f8f8;
   --panel: #ffffff;
   --sidebar: #ffffff;
-  --surface-muted: #f4f4f5;
+  --surface-muted: #f6f6f6;
   --surface-raised: #ffffff;
-  --hover: #f4f4f5;
-  --selected: #f4f4f5;
-  --text: #09090b;
-  --text-secondary: #52525b;
-  --text-muted: #71717a;
-  --border: #e4e4e7;
-  --border-subtle: #f4f4f5;
-  --brand: #18181b;
-  --brand-hover: #27272a;
-  --brand-soft: #f4f4f5;
-  --focus: #18181b;
-  --focus-soft: rgb(24 24 27 / .16);
-  --overlay: rgb(9 9 11 / .42);
-  --shadow: rgb(24 24 27 / .06);
-  --shadow-strong: rgb(24 24 27 / .16);
-  --skeleton: #f4f4f5;
-  --success: #52525b;
-  --success-bg: #f4f4f5;
-  --success-border: #d4d4d8;
-  --success-text: #3f3f46;
-  --warning: #d97706;
+  --hover: #f2f2f2;
+  --selected: #ececec;
+  --text: #171717;
+  --text-secondary: #5f5f5f;
+  --text-muted: #707070;
+  --border: #dedede;
+  --border-subtle: #ededed;
+  --brand: #111111;
+  --brand-hover: #2b2b2b;
+  --brand-soft: #efefef;
+  --focus: #2563eb;
+  --focus-soft: rgb(37 99 235 / .18);
+  --overlay: rgb(17 17 17 / .42);
+  --shadow: rgb(17 17 17 / .07);
+  --shadow-strong: rgb(17 17 17 / .16);
+  --skeleton: #eeeeee;
+  --success: #15875b;
+  --success-bg: #eaf7f0;
+  --success-border: #bce3cf;
+  --success-text: #116844;
+  --warning: #f59e0b;
   --warning-bg: #fffbeb;
   --warning-border: #fde68a;
-  --warning-text: #a16207;
-  --danger: #e11d48;
-  --danger-hover: #be123c;
-  --danger-bg: #fff1f2;
-  --danger-border: #fecdd3;
-  --danger-text: #be123c;
-  --info-bg: #f4f4f5;
-  --info-border: #d4d4d8;
-  --info-text: #52525b;
+  --warning-text: #92400e;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --danger-text: #b91c1c;
+  --info-bg: #eff6ff;
+  --info-border: #bfdbfe;
+  --info-text: #1d4ed8;
   --foreground: var(--text);
   --radius: 1rem;
 
@@ -46,10 +46,10 @@
   --card-foreground: var(--text);
   --primary: var(--brand);
   --primary-foreground: #ffffff;
-  --secondary: #f4f4f5;
-  --secondary-hover: #e4e4e7;
+  --secondary: #f1f1f1;
+  --secondary-hover: #e4e4e4;
   --secondary-foreground: var(--text);
-  --muted: #f4f4f5;
+  --muted: #f3f3f3;
   --muted-foreground: var(--text-muted);
   --accent: var(--brand-soft);
   --accent-foreground: var(--text);
@@ -58,47 +58,47 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #09090b;
-  --panel: #09090b;
-  --sidebar: #09090b;
-  --surface-muted: #18181b;
-  --surface-raised: #09090b;
-  --hover: #27272a;
-  --selected: #27272a;
-  --text: #f4f4f5;
-  --text-secondary: #d4d4d8;
-  --text-muted: #a1a1aa;
-  --border: #27272a;
-  --border-subtle: #1f1f22;
+  --background: #111111;
+  --panel: #171717;
+  --sidebar: #141414;
+  --surface-muted: #222222;
+  --surface-raised: #1c1c1c;
+  --hover: #292929;
+  --selected: #303030;
+  --text: #fafafa;
+  --text-secondary: #d4d4d4;
+  --text-muted: #a3a3a3;
+  --border: #343434;
+  --border-subtle: #242424;
   --brand: #fafafa;
-  --brand-hover: #e4e4e7;
-  --brand-soft: #27272a;
-  --focus: #fafafa;
-  --focus-soft: rgb(250 250 250 / .24);
+  --brand-hover: #e5e5e5;
+  --brand-soft: #2a2a2a;
+  --focus: #60a5fa;
+  --focus-soft: rgb(96 165 250 / .24);
   --overlay: rgb(0 0 0 / .7);
   --shadow: rgb(0 0 0 / .24);
   --shadow-strong: rgb(0 0 0 / .48);
-  --skeleton: #18181b;
-  --success: #a1a1aa;
-  --success-bg: #27272a;
-  --success-border: #3f3f46;
-  --success-text: #e4e4e7;
+  --skeleton: #242424;
+  --success: #4ade80;
+  --success-bg: #14291d;
+  --success-border: #285b3a;
+  --success-text: #86efac;
   --warning: #fbbf24;
-  --warning-bg: #29210f;
-  --warning-border: #61491a;
+  --warning-bg: #2d2410;
+  --warning-border: #664c17;
   --warning-text: #fcd34d;
-  --danger: #fb7185;
-  --danger-hover: #f43f5e;
-  --danger-bg: #2b141b;
-  --danger-border: #652337;
-  --danger-text: #fda4af;
-  --info-bg: #27272a;
-  --info-border: #3f3f46;
-  --info-text: #d4d4d8;
-  --primary-foreground: #18181b;
-  --secondary: #27272a;
-  --secondary-hover: #3f3f46;
-  --muted: #18181b;
+  --danger: #f87171;
+  --danger-hover: #ef4444;
+  --danger-bg: #371b19;
+  --danger-border: #73312d;
+  --danger-text: #fca5a5;
+  --info-bg: #17233b;
+  --info-border: #28477a;
+  --info-text: #93c5fd;
+  --primary-foreground: #111111;
+  --secondary: #262626;
+  --secondary-hover: #363636;
+  --muted: #222222;
 }
 
 @theme inline {
@@ -120,6 +120,13 @@ body {
 }
 button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--panel) inset;
+  caret-color: var(--text);
+}
 
 .task-list-container { container-type: inline-size; }
 .task-grid { grid-template-columns: 100px minmax(0, 1fr); gap: 8px; }
@@ -144,6 +151,7 @@ button { cursor: pointer; }
 .dependency-map-connector { min-height: 22px; flex-direction: column; }
 .dependency-map-connector-line { width: 1px; min-height: 10px; flex: 1; }
 .dependency-map-canvas { container-type: inline-size; background-color: var(--surface-muted); background-image: radial-gradient(circle, var(--border) 1px, transparent 1.1px); background-size: 16px 16px; }
+.agent-workflow-canvas { background-color: var(--surface-muted); background-image: radial-gradient(circle, var(--border) 1px, transparent 1.1px); background-size: 18px 18px; }
 .dependency-map-connector-arrow { transform: rotate(90deg); }
 @container (min-width: 680px) {
   .dependency-map-grid { grid-template-columns: minmax(0, 1fr) 28px minmax(220px, 1.25fr) 28px minmax(0, 1fr); }
@@ -168,8 +176,8 @@ button { cursor: pointer; }
 .animate-enter-up { animation: enter-up .18s ease-out both; }
 
 @keyframes pulse-dot {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(82 82 91 / 0); }
-  50% { box-shadow: 0 0 0 4px rgb(82 82 91 / .13); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(17 17 17 / 0); }
+  50% { box-shadow: 0 0 0 4px rgb(17 17 17 / .14); }
 }
 .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 

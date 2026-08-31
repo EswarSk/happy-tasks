@@ -228,6 +228,49 @@ FROM (
 WHERE task.project_id = counts.project_id
   AND task.id = counts.task_id;
 
+INSERT INTO agent_runs (
+    id, project_id, task_id, orchestrator, external_run_id, workflow_name,
+    definition_id, definition_version, status, started_at, created_at, updated_at
+) VALUES (
+    '50000000-0000-7000-8000-000000000001',
+    '01000000-0000-7000-8000-000000000001',
+    '10000000-0000-7000-8000-000000000002',
+    'happyrobot', 'hr-run-sse-replay-001', 'Ship SSE replay',
+    'workflow-sse-replay', '7', 'RUNNING',
+    '2026-08-30T17:20:00Z', '2026-08-30T17:20:00Z', '2026-08-30T17:23:00Z'
+)
+ON CONFLICT (project_id, orchestrator, external_run_id) DO UPDATE
+SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at;
+
+INSERT INTO agent_run_nodes (
+    id, run_id, external_node_id, agent_name, label, node_type, status,
+    position_x, position_y, output, started_at, completed_at, updated_at
+) VALUES
+    ('51000000-0000-7000-8000-000000000001', '50000000-0000-7000-8000-000000000001', 'plan', 'Coordinator', 'Plan execution', 'orchestrator', 'SUCCEEDED', 120, 240, '{"steps":4}', '2026-08-30T17:20:00Z', '2026-08-30T17:20:08Z', '2026-08-30T17:20:08Z'),
+    ('51000000-0000-7000-8000-000000000002', '50000000-0000-7000-8000-000000000001', 'inspect', 'Repository analyst', 'Inspect replay path', 'agent', 'SUCCEEDED', 450, 100, '{"filesRead":8}', '2026-08-30T17:20:08Z', '2026-08-30T17:21:14Z', '2026-08-30T17:21:14Z'),
+    ('51000000-0000-7000-8000-000000000003', '50000000-0000-7000-8000-000000000001', 'implement', 'Backend agent', 'Implement replay recovery', 'agent', 'RUNNING', 450, 380, '{}', '2026-08-30T17:21:14Z', NULL, '2026-08-30T17:23:00Z'),
+    ('51000000-0000-7000-8000-000000000004', '50000000-0000-7000-8000-000000000001', 'verify', 'Verification agent', 'Run reconnect scenarios', 'agent', 'PENDING', 800, 240, '{}', NULL, NULL, '2026-08-30T17:20:00Z')
+ON CONFLICT (run_id, external_node_id) DO UPDATE
+SET status = EXCLUDED.status, output = EXCLUDED.output, started_at = EXCLUDED.started_at,
+    completed_at = EXCLUDED.completed_at, updated_at = EXCLUDED.updated_at;
+
+INSERT INTO agent_run_edges (run_id, source_node_id, target_node_id) VALUES
+    ('50000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000002'),
+    ('50000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000003'),
+    ('50000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000002', '51000000-0000-7000-8000-000000000004'),
+    ('50000000-0000-7000-8000-000000000001', '51000000-0000-7000-8000-000000000003', '51000000-0000-7000-8000-000000000004')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO agent_run_events (
+    run_id, sequence, external_event_id, node_id, event_type, message, payload, occurred_at
+) VALUES
+    ('50000000-0000-7000-8000-000000000001', 1, 'hr-event-001', NULL, 'run.started', 'Workflow run started', '{}', '2026-08-30T17:20:00Z'),
+    ('50000000-0000-7000-8000-000000000001', 2, 'hr-event-002', '51000000-0000-7000-8000-000000000001', 'node.succeeded', 'Execution plan created with four steps', '{"durationMs":8000}', '2026-08-30T17:20:08Z'),
+    ('50000000-0000-7000-8000-000000000001', 3, 'hr-event-003', '51000000-0000-7000-8000-000000000002', 'node.succeeded', 'Replay and reconnect paths inspected', '{"durationMs":66000}', '2026-08-30T17:21:14Z'),
+    ('50000000-0000-7000-8000-000000000001', 4, 'hr-event-004', '51000000-0000-7000-8000-000000000003', 'node.started', 'Implementing durable replay recovery', '{}', '2026-08-30T17:21:14Z'),
+    ('50000000-0000-7000-8000-000000000001', 5, 'hr-event-005', '51000000-0000-7000-8000-000000000003', 'node.progress', 'Added gap detection; wiring recovery tests', '{"progress":60}', '2026-08-30T17:23:00Z')
+ON CONFLICT DO NOTHING;
+
 INSERT INTO project_streams (project_id, last_sequence) VALUES
     ('01000000-0000-7000-8000-000000000001', 4),
     ('01000000-0000-7000-8000-000000000002', 0)

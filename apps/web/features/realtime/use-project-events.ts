@@ -91,6 +91,7 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
   if (event.type === "task.created" || event.type === "task.updated" || event.type === "task.description.updated") {
     applyTaskEvent(queryClient, event.projectId, payload);
     if (event.type === "task.created") void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    if (event.type === "task.updated") void queryClient.invalidateQueries({ queryKey: ["notifications", event.projectId] });
   }
   if (event.type === "task.deleted") {
     queryClient.removeQueries({ queryKey: ["task", event.projectId, event.aggregateId] });

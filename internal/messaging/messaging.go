@@ -2,9 +2,11 @@ package messaging
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/eswaravegi/happy-task-management/internal/domain"
 	"github.com/redis/go-redis/v9"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
 const (
@@ -52,13 +55,29 @@ type Producer struct {
 }
 
 func NewProducer(brokers []string) *Producer {
+	dialer := kafkaDialer()
 	writer := func(topic string) *kafka.Writer {
 		return kafka.NewWriter(kafka.WriterConfig{
-			Brokers: brokers, Topic: topic, Balancer: &kafka.Hash{},
+			Brokers: brokers, Topic: topic, Balancer: &kafka.Hash{}, Dialer: dialer,
 			RequiredAcks: int(kafka.RequireAll), Async: false, BatchTimeout: 10 * time.Millisecond,
 		})
 	}
 	return &Producer{projects: writer(ProjectEventsTopic), documents: writer(DocumentUpdatesTopic)}
+}
+
+// kafkaDialer builds a SASL/SCRAM+TLS dialer from KAFKA_SASL_USERNAME/KAFKA_SASL_PASSWORD
+// when set (managed brokers such as Redpanda Serverless require it), or nil for the
+// plaintext, unauthenticated broker used by local Compose.
+func kafkaDialer() *kafka.Dialer {
+	username := strings.TrimSpace(os.Getenv("KAFKA_SASL_USERNAME"))
+	if username == "" {
+		return nil
+	}
+	mechanism, err := scram.Mechanism(scram.SHA256, username, os.Getenv("KAFKA_SASL_PASSWORD"))
+	if err != nil {
+		panic("messaging: invalid KAFKA_SASL_PASSWORD: " + err.Error())
+	}
+	return &kafka.Dialer{Timeout: 10 * time.Second, DualStack: true, SASLMechanism: mechanism, TLS: &tls.Config{MinVersion: tls.VersionTLS12}}
 }
 
 func (p *Producer) PublishProjectEvent(ctx context.Context, event domain.Event) error {
@@ -246,7 +265,7 @@ func Brokers(value string) []string {
 func RunDistributor(ctx context.Context, brokers []string, fanout *Redis, topic string) error {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers: brokers, Topic: topic, GroupID: "happy-tasks-realtime-distributor-" + topic,
-		MinBytes: 1, MaxBytes: 4 << 20, CommitInterval: 0,
+		MinBytes: 1, MaxBytes: 4 << 20, CommitInterval: 0, Dialer: kafkaDialer(),
 	})
 	defer reader.Close()
 	for {
