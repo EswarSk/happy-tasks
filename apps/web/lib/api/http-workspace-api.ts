@@ -206,20 +206,28 @@ export class HttpWorkspaceApi implements WorkspaceApi {
   }
 
   async createTask(projectId: string, title: string) {
+    return this.createTaskWithIdentity(projectId, title, crypto.randomUUID(), newRequestId());
+  }
+
+  protected async createTaskWithIdentity(projectId: string, title: string, id: string, idempotencyKey: string) {
     const task = await this.request<ApiTask>(`/v1/projects/${projectId}/tasks`, {
       method: "POST",
-      headers: { "Idempotency-Key": newRequestId() },
-      body: JSON.stringify({ id: crypto.randomUUID(), title, status: "TODO", priority: "MEDIUM" }),
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({ id, title, status: "TODO", priority: "MEDIUM" }),
     });
     return normalizeTask(task);
   }
 
   async updateTask(projectId: string, taskId: string, input: UpdateTaskInput) {
+    return this.updateTaskWithIdentity(projectId, taskId, input, newRequestId());
+  }
+
+  protected async updateTaskWithIdentity(projectId: string, taskId: string, input: UpdateTaskInput, idempotencyKey: string) {
     const { expectedVersion, status, priority, ...rest } = input;
     const body = { ...rest, ...(status ? { status: status.toUpperCase() } : {}), ...(priority ? { priority: priority.toUpperCase() } : {}) };
     const task = await this.request<ApiTask>(`/v1/projects/${projectId}/tasks/${taskId}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": newRequestId(), "If-Match": `"${expectedVersion}"` },
+      headers: { "Idempotency-Key": idempotencyKey, "If-Match": `"${expectedVersion}"` },
       body: JSON.stringify(body),
     });
     return normalizeTask(task);
@@ -242,9 +250,13 @@ export class HttpWorkspaceApi implements WorkspaceApi {
   }
 
   deleteTask(projectId: string, taskId: string, expectedVersion: number) {
+    return this.deleteTaskWithIdentity(projectId, taskId, expectedVersion, newRequestId());
+  }
+
+  protected deleteTaskWithIdentity(projectId: string, taskId: string, expectedVersion: number, idempotencyKey: string) {
     return this.request<{ id: string; deleted: true; version: number }>(`/v1/projects/${projectId}/tasks/${taskId}`, {
       method: "DELETE",
-      headers: { "Idempotency-Key": newRequestId(), "If-Match": `"${expectedVersion}"` },
+      headers: { "Idempotency-Key": idempotencyKey, "If-Match": `"${expectedVersion}"` },
     });
   }
 

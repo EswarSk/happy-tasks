@@ -1,4 +1,4 @@
-const CACHE = "happy-tasks-shell-v3";
+const CACHE = "happy-tasks-shell-v5";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(["/offline", "/icon.svg", "/icon-192x192.png", "/icon-512x512.png"])).then(() => self.skipWaiting()));
@@ -15,7 +15,13 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match("/offline")));
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok) {
+        const copy = response.clone();
+        void caches.open(CACHE).then((cache) => cache.put(request, copy));
+      }
+      return response;
+    }).catch(async () => (await caches.match(request)) || caches.match("/offline")));
     return;
   }
   if (new URL(request.url).pathname.startsWith("/_next/static/") || ["/icon.svg", "/icon-192x192.png", "/icon-512x512.png"].includes(new URL(request.url).pathname)) {

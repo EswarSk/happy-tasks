@@ -27,7 +27,7 @@ To connect the Go API, set `NEXT_PUBLIC_DATA_SOURCE=api`. The HTTP adapter maps 
 
 The backend should allow `http://localhost:3000` through CORS. Project events stream from `/v1/projects/{projectId}/events?after={cursor}` and reconcile compact task/comment/reaction/notification payloads into the TanStack Query cache. Ephemeral presence and description selection use `/v1/projects/{projectId}/collaboration/live`; the activity route reads the same durable event window through `/v1/projects/{projectId}/activity`.
 
-API mode includes `/login` for email/password sessions. Requests and project SSE replay send browser credentials; private task files are uploaded as multipart data and downloaded through the authenticated attachment route. The service worker caches only the app shell and offline fallback, never private API responses.
+API mode includes `/login` for email/password sessions. Requests and project SSE replay send browser credentials; private task files are uploaded as multipart data and downloaded through the authenticated attachment route. The service worker caches the static shell, offline fallback, and previously visited navigation shells, but never private API responses. Private projects, bootstrap data, and tasks are cached in actor-scoped IndexedDB storage and cleared on sign-out. Task creates, field updates, and deletes queue with stable idempotency keys while offline and replay in order after reconnect; conflicts remain visible instead of being overwritten. Comments, attachments, membership changes, undo/redo, and collaborative-description persistence still require a live connection.
 
 ## Quality checks
 

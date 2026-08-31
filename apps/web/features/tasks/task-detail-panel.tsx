@@ -63,7 +63,7 @@ export function TaskDetailPanel({ projectId, taskId, members, collaborators = []
       else toast.error(error instanceof Error ? error.message : "Task could not be saved");
     },
     onSuccess: (saved, input) => {
-      patchTaskInCache(queryClient, projectId, { ...saved, syncState: "synced" });
+      patchTaskInCache(queryClient, projectId, { ...saved, syncState: saved.syncState ?? "synced" });
       setDraft({ taskId: saved.id, title: saved.title, description: saved.description });
       setCustomFieldsDrafts((current) => ({ ...current, [saved.id]: saved.customFields }));
       if (input.assigneeIds) void queryClient.invalidateQueries({ queryKey: ["assignment-history", projectId, taskId] });

@@ -3,7 +3,7 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import type { ActivityItem, Comment, ConnectionState, Page, Task, TaskPriority, TaskStatus } from "@/lib/api";
+import { offlineWorkspaceApi, type ActivityItem, type Comment, type ConnectionState, type Page, type Task, type TaskPriority, type TaskStatus } from "@/lib/api";
 import { createSseParser } from "@/lib/realtime/sse";
 import { incrementTaskCommentCount } from "@/features/tasks/query-cache";
 
@@ -46,6 +46,7 @@ function applyTaskEvent(queryClient: QueryClient, projectId: string, payload: Re
   const existing = queryClient.getQueryData<Task>(["task", projectId, id]);
   const task = normalizeEventTask(payload, existing);
   if (!task || (existing && task.version < existing.version)) return;
+  void offlineWorkspaceApi?.rememberTask(task).catch(() => undefined);
   queryClient.setQueryData(["task", projectId, id], task);
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current) return current;
@@ -94,6 +95,7 @@ export function applyEvent(queryClient: QueryClient, event: SyncEvent) {
     if (event.type === "task.updated") void queryClient.invalidateQueries({ queryKey: ["notifications", event.projectId] });
   }
   if (event.type === "task.deleted") {
+    void offlineWorkspaceApi?.forgetTask(event.projectId, event.aggregateId).catch(() => undefined);
     queryClient.removeQueries({ queryKey: ["task", event.projectId, event.aggregateId] });
     void queryClient.invalidateQueries({ queryKey: ["tasks", event.projectId] });
     void queryClient.invalidateQueries({ queryKey: ["projects"] });

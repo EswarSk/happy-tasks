@@ -36,7 +36,7 @@ export function TaskBoard({ projectId, filters, members, selectedTaskId, onOpenT
       else toast.error(error instanceof Error ? error.message : "Task could not be moved");
     },
     onSuccess: (saved) => {
-      patchTaskInCache(queryClient, projectId, { ...saved, syncState: "synced" });
+      patchTaskInCache(queryClient, projectId, { ...saved, syncState: saved.syncState ?? "synced" });
       void queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
     },
   });

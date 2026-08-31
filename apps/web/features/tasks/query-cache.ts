@@ -1,7 +1,8 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
-import type { Page, Task } from "@/lib/api";
+import { offlineWorkspaceApi, type Page, type Task } from "@/lib/api";
 
 export function patchTaskInCache(queryClient: QueryClient, projectId: string, task: Task) {
+  void offlineWorkspaceApi?.rememberTask(task).catch(() => undefined);
   queryClient.setQueryData<Task>(["task", projectId, task.id], task);
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current) return current;
@@ -16,6 +17,7 @@ export function patchTaskInCache(queryClient: QueryClient, projectId: string, ta
 }
 
 export function prependTaskToCache(queryClient: QueryClient, projectId: string, task: Task) {
+  void offlineWorkspaceApi?.rememberTask(task).catch(() => undefined);
   queryClient.setQueryData<Task>(["task", projectId, task.id], task);
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current || !current.pages[0]) return current;
@@ -39,6 +41,7 @@ export function prependTaskToCache(queryClient: QueryClient, projectId: string, 
 }
 
 export function removeTaskFromCache(queryClient: QueryClient, projectId: string, taskId: string) {
+  void offlineWorkspaceApi?.forgetTask(projectId, taskId).catch(() => undefined);
   queryClient.removeQueries({ queryKey: ["task", projectId, taskId] });
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current) return current;
@@ -68,6 +71,8 @@ function adjustTaskCommentCount(queryClient: QueryClient, projectId: string, tas
   queryClient.setQueryData<Task>(["task", projectId, taskId], (current) =>
     current ? { ...current, commentCount: Math.max(0, current.commentCount + delta) } : current,
   );
+  const updated = queryClient.getQueryData<Task>(["task", projectId, taskId]);
+  if (updated) void offlineWorkspaceApi?.rememberTask(updated).catch(() => undefined);
   queryClient.setQueriesData<InfiniteData<Page<Task>>>({ queryKey: ["tasks", projectId] }, (current) => {
     if (!current) return current;
     return {

@@ -120,7 +120,7 @@ export function WorkspaceShell({ projectId, selectedTaskId, showActivity = false
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       setCreateOpen(false);
       setNewTaskTitle("");
-      toast.success("Task created");
+      toast.success(task.syncState === "pending" ? "Task queued for sync" : "Task created");
       openTaskInProject(task.projectId, task.id);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Task could not be created"),
